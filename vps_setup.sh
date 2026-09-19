@@ -21,39 +21,6 @@
 #     restart để chứng minh cấu hình thực sự có hiệu lực (không chỉ giả định).
 #   - Không đụng vào /etc/ssh/sshd_config gốc -> an toàn, dễ gỡ (chỉ cần xoá 1 file).
 #
-# CHANGELOG:
-#   1.0.0 - Bản theo dõi version đầu tiên. Gồm các fix đã kiểm chứng bằng Docker:
-#           ghi cấu hình vào drop-in "00-tunnel-<user>.conf" (thắng theo glob-sort
-#           thay vì append cuối sshd_config), tự verify bằng `sshd -T -C` sau khi
-#           restart, phát hiện file config xung đột, validate input (username/port/
-#           pubkey), restart sshd có fallback (systemctl/service).
-#   1.0.1 - Fix bug verify: so khớp PermitListen bằng substring wildcard có thể
-#           PASS giả (vd cần port "22" nhưng thực tế chỉ có "2222" — "127.0.0.1:22"
-#           là substring của "127.0.0.1:2222"). Đổi sang so khớp CHÍNH XÁC từng
-#           token. Đã unit-test lại cả 2 case (đúng/sai) để xác nhận.
-#   1.1.0 - Tự cài openssh-server nếu chưa có trên VPS (trước khi tạo user tunnel),
-#           dùng chung hàm install_pkg với local_setup.sh. Theo yêu cầu: script
-#           phải tự cài mọi thứ cần thiết, tránh phải debug thủ công môi trường
-#           thiếu package.
-#   1.1.1 - Log rõ ràng hơn cho việc cài package: thêm hàm ensure_pkg in rõ
-#           "đã có sẵn -> BỎ QUA" / "CHƯA có -> đang cài" / "CÀI THÀNH CÔNG" /
-#           "CÀI THẤT BẠI", và install_pkg in rõ đang dùng trình quản lý gói
-#           nào (apt/dnf/yum/pacman/zypper/apk).
-#   1.2.0 - Fix bug thật gặp khi 1 user tunnel-only dùng cho nhiều máy client (vd
-#           máy tự chạy reverse-tunnel + máy khác dùng để ProxyJump vào cùng
-#           tunnel đó): bước cài public key trước đây dùng "> authorized_keys"
-#           (ghi đè cả file) thay vì append. Chạy vps_setup.sh lần 2 cho CÙNG
-#           username với key của máy khác sẽ ÂM THẦM xoá key máy đầu tiên, gây
-#           lỗi "Permission denied (publickey)" ở máy đó dù trước đó đã setup
-#           đúng — rất khó debug vì không có cảnh báo gì lúc xoá. Giờ kiểm tra
-#           key đã có chưa rồi mới append, giữ nguyên mọi key khác đã có sẵn.
-#   1.3.0 - Thêm hướng dẫn rõ ràng ở cuối script cho 2 luồng sinh keypair khác
-#           nhau: (A, khuyến nghị) private key sinh sẵn trên máy client (vd bằng
-#           local_setup.sh) — không cần làm gì thêm; (B) private key lỡ sinh
-#           ngay trên VPS này (khi nhập public key bằng đường dẫn file, tự phát
-#           hiện private key cùng thư mục) — hướng dẫn tải AN TOÀN về client qua
-#           scp rồi xoá khỏi VPS, tránh để private key tồn tại ở 2 nơi lâu dài.
-#
 SCRIPT_VERSION="1.3.0"
 
 set -euo pipefail

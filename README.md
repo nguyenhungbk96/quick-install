@@ -5,13 +5,30 @@ qua WSL, máy sau router/CGNAT...) từ bất kỳ đâu trên Internet, thông 
 IP public làm trạm trung gian. Cũng dùng để expose bất kỳ port nào khác của máy đó
 (web app, database...) ra ngoài theo cùng cơ chế.
 
-- `vps_setup.sh` (v1.1.1) — chạy **trên VPS**, tạo 1 user "chỉ dùng để tunnel"
+- `vps_setup.sh` (v1.3.0) — chạy **trên VPS**, tạo 1 user "chỉ dùng để tunnel"
   (không có shell, không login được, chỉ forward đúng các port bạn chỉ định).
-- `local_setup.sh` (v1.5.0) — chạy **trên máy muốn được truy cập từ xa**, tự tạo
-  key, tự cài các gói cần thiết, tự tạo service nền để tunnel luôn sống. Ở cuối
-  script còn hỏi tuỳ chọn tạo thêm **remote user khác** (full shell, chỉ đăng
-  nhập bằng SSH key riêng) — dùng khi 1 máy cần cho nhiều người khác nhau remote
-  vào bằng tài khoản + key riêng của từng người, thay vì dùng chung 1 tài khoản.
+- `local_setup.sh` (v1.9.0) — chạy **trên máy muốn được truy cập từ xa**, tự tạo
+  key, tự cài các gói cần thiết, tự tạo service nền để tunnel luôn sống. Ngay đầu
+  script còn hỏi tuỳ chọn tạo thêm **remote user** (full shell, key riêng, password
+  tuỳ chọn) — dùng khi 1 máy cần cho nhiều người khác nhau remote vào bằng tài
+  khoản + key riêng của từng người, thay vì dùng chung 1 tài khoản.
+  Chạy được cả bằng **user thường** lẫn bằng **root** (xem mục dưới).
+
+### Chạy bằng user thường hay bằng root?
+
+Cùng 1 script, nhưng **service nền khác nhau về bản chất** nên hãy chọn đúng
+kiểu ngay từ đầu:
+
+| | `./local_setup.sh` (user thường) | `sudo ./local_setup.sh` (root) |
+|---|---|---|
+| Dành cho | Máy cá nhân, bạn tự SSH vào chính tài khoản mình | Provisioning: root tạo sẵn user + key, người dùng thật SSH vào user riêng |
+| Service nền | LaunchAgent / `systemd --user` — gắn với phiên đăng nhập (cần `linger`) | LaunchDaemon / systemd **system unit** — chạy từ lúc boot, không cần ai đăng nhập |
+| Tài khoản đích khi SSH vào | Chính user đang chạy script (tự authorize key) | **Không authorize root** (mặc định) — dùng các remote user tạo ở bước [3/6] |
+| Cần `sudo` cài sẵn? | Có (script tự gọi khi cần) | Không (đã là root, gọi thẳng) |
+
+Trên máy headless/server, **chạy bằng root là lựa chọn đúng**: tunnel sống từ
+lúc boot kể cả khi không ai đăng nhập, còn `systemd --user` thì cần user đó có
+phiên đăng nhập thật (hoặc bật `linger`) mới chạy được.
 
 Cả 2 file đều **hỏi tương tác** (không cần sửa file hay nhớ tham số dòng lệnh),
 và **tự kiểm chứng** kết quả thật trước khi báo thành công — không có kiểu
@@ -77,6 +94,22 @@ sự áp dụng* cho user đó, không chỉ đoán):
 Kết quả cuối: `✔ HOÀN TẤT` (đã xác nhận có hiệu lực) hoặc `✘ CẢNH BÁO` kèm hướng
 dẫn debug cụ thể — không bao giờ báo thành công giả.
 
+### Keypair cho tunnel: sinh ở đâu — 2 phương án
+
+`vps_setup.sh` chỉ hỏi **public key**, không quan tâm bạn tạo keypair ở đâu.
+Sau khi chạy xong (`✔ HOÀN TẤT`), script tự in ra đúng hướng dẫn tương ứng:
+
+| | Khi nào | Thao tác còn lại | Private key phải di chuyển? |
+|---|---|---|---|
+| **[A] — khuyến nghị** | Keypair đã sinh sẵn **trên máy client/đích** (vd bằng `local_setup.sh` ở Bước 2, hoặc tự `ssh-keygen`), bạn chỉ dán/trỏ **public key** vào `vps_setup.sh` | Không cần làm gì thêm — private key vốn đã nằm đúng chỗ | Không |
+| **[B]** | Bạn nhập public key bằng **đường dẫn file `.pub` trên chính VPS** (vd lỡ chạy `ssh-keygen` ngay trên VPS) | Tải private key về máy client qua kênh mã hoá (`scp`), rồi **xoá khỏi VPS** | Có |
+
+**Vì sao [A] là mặc định nên dùng**: private key không bao giờ nên rời khỏi máy
+sinh ra nó (cùng nguyên tắc áp dụng lại ở Bước 4 bên dưới, cho remote user).
+Nếu bạn trỏ script vào 1 đường dẫn `.pub` và nó phát hiện private key tương ứng
+nằm cùng thư mục trên VPS (trường hợp [B]), script **tự in sẵn đúng lệnh**
+`scp` để tải về + `shred`/`rm` để xoá khỏi VPS — không cần tự nhớ đường dẫn.
+
 ---
 
 ## Bước 2 — Setup máy đích (máy muốn được truy cập từ xa)
@@ -97,6 +130,8 @@ Script hỏi:
    - `remote_port`: port trên VPS (khớp danh sách đã khai ở Bước 1).
    - `local_port`: port tương ứng trên chính máy đích (`22` = SSH vào máy này,
      port khác = ứng dụng riêng của bạn, ví dụ web app).
+5. **Remote user** (tuỳ chọn) — có cần tạo thêm tài khoản riêng trên máy này cho
+   người khác SSH vào không (tên user / password / đường dẫn key). Xem Bước 4.
 
 Sau đó script tự động:
 - **Cài `autossh`** nếu chưa có (brew/apt/dnf/yum/pacman/zypper/apk tuỳ máy).
@@ -159,22 +194,41 @@ Lặp lại bước này cho từng thiết bị bạn muốn dùng để truy c
 
 Mặc định, `local_setup.sh` chỉ authorize key cho **user hiện tại** trên máy đích
 (người chạy script). Nếu muốn **người khác** cũng SSH vào được máy này bằng tài
-khoản + key **riêng** của họ (không dùng chung tài khoản của bạn), **ngay cuối**
-`local_setup.sh` (sau khi tunnel đã chạy xong) script sẽ hỏi:
+khoản + key **riêng** của họ (không dùng chung tài khoản của bạn), `local_setup.sh`
+hỏi **ngay ở đầu** — cùng cụm câu hỏi key/VPS/port map:
 
 ```
-Tạo thêm remote user khác trên máy này (để người khác SSH vào bằng tài khoản + key riêng)? (y/N):
+Tạo remote user? (y/N):
 ```
 
-Trả lời `y`, script hỏi tiếp:
-1. **Tên user mới** muốn tạo trên máy này.
-2. **Đường dẫn lưu keypair** riêng cho user đó (mặc định tự sinh mới).
+Trả lời `y`, script hỏi tiếp cho **từng user** (lặp bao nhiêu người tuỳ ý):
+1. **Tên user** muốn tạo trên máy này.
+2. **Password** — để trống (Enter) = không đặt password, **chỉ đăng nhập bằng
+   SSH key** (an toàn nhất, vẫn SSH vào bình thường). Đặt password nếu user đó
+   cần đăng nhập tại màn hình máy.
+3. **Quyền sudo** — `Cho <user> quyền sudo? (y/N)`, nếu có thì hỏi tiếp
+   `sudo KHÔNG cần password (NOPASSWD)? (y/N)`. Script tự thêm user vào group
+   `sudo`/`wheel` (Linux) hoặc `admin` (macOS), và nếu chọn NOPASSWD thì ghi
+   drop-in `/etc/sudoers.d/<user>` — **validate cú pháp bằng `visudo -c -f`
+   trước khi cài** (file sudoers sai cú pháp có thể làm `sudo` ngừng hoạt động
+   trên cả máy), đặt đúng quyền `440 root:root` (sai quyền thì sudo **âm thầm
+   bỏ qua**), rồi **tự kiểm chứng** bằng `sudo -n true`.
+4. **Đường dẫn lưu keypair** riêng cho user đó (mặc định tự sinh mới).
+
+> Chọn "sudo có hỏi password" cho tài khoản **không đặt password** thì sẽ không
+> bao giờ dùng được sudo — script cảnh báo ngay tại chỗ hỏi.
+
+Hỏi hết ở đầu nhưng **tạo thật ở bước [3/6]** (sau khi sshd đã sẵn sàng) — vì
+ngay sau khi tạo, script tự SSH thử vào chính user đó để kiểm chứng. Phần **bàn
+giao** (private key, đăng ký key lên VPS, test hop đầu, mẫu `~/.ssh/config`)
+nằm ở cuối vì cần `remote_port` + tunnel đã dựng xong mới test được.
 
 Script tự động (dùng lại `$VPS_IP`/tên user tunnel/`remote_port` đã hỏi ở đầu
 lần chạy này, không hỏi lại):
-- Tạo user **full shell** (home dir + bash/zsh) nhưng **không đặt password** —
-  chỉ đăng nhập được bằng SSH key (`passwd -l`/`usermod -L` trên Linux,
-  `sysadminctl -password -` trên macOS).
+- Tạo user **full shell** (home dir + bash/zsh). Nếu bỏ trống password thì khoá
+  hẳn password (`usermod -L`/`passwd -l` trên Linux, `sysadminctl -password -`
+  trên macOS) → chỉ đăng nhập được bằng SSH key. Nếu có nhập password thì đặt
+  qua `chpasswd` đọc STDIN (password **không lộ trong `ps`**).
 - Trên macOS, nếu Remote Login đang giới hạn theo danh sách user/group
   (`com.apple.access_ssh`), tự thêm user mới vào group đó — nếu không, Remote
   Login mặc định cho "All users" nên không cần làm gì thêm.
@@ -202,14 +256,32 @@ Nhờ đăng ký key lên cả 2 nơi, mỗi remote user có 1 key độc lập 
 hop — thu hồi quyền 1 người chỉ cần xoá đúng 1 key đó ở cả 2 nơi, không ảnh
 hưởng ai khác.
 
-Sau khi xong, script hỏi "Tạo thêm 1 remote user nữa? (y/N)" — lặp lại được bao
-nhiêu người tuỳ ý trong cùng 1 lần chạy, không cần chạy lại toàn bộ script.
+Có thể khai nhiều user trong cùng 1 lần chạy — script hỏi "Tạo thêm user nữa?" lặp
+lại cho tới khi bạn trả lời "n", rồi tạo tất cả ở bước [3/6].
 
-**Lưu ý bảo mật**: private key được sinh ra **trên chính máy đích** (máy bạn
-vừa chạy script) — nếu người dùng là người khác, phải chuyển private key đó
-cho họ qua kênh an toàn (scp/sftp) rồi **xoá khỏi máy đích**, giống hệt lưu ý
-"Phương án B" ở cuối `vps_setup.sh` khi keypair lỡ sinh trên VPS thay vì trên
-máy client.
+### Đưa key tới máy sẽ SSH — 2 phương án
+
+Script sinh sẵn 1 keypair cho mỗi remote user, nhưng **đó không phải cách duy
+nhất**, và thường không phải cách ít thao tác nhất. Phần BÀN GIAO cuối script
+in ra cả 2:
+
+| | Khi nào dùng | Thao tác | Private key phải di chuyển? |
+|---|---|---|---|
+| **[A]** Mang private key vừa sinh sang máy sẽ SSH | User là **người khác**, hoặc máy đó **chưa có** key SSH nào | `cat` key → copy → tạo file trên máy đó → `chmod 600` → trỏ `IdentityFile` | **Có** |
+| **[B]** Thêm **public key của máy đó** vào `authorized_keys` của user | User **chính là bạn**, trên máy vốn **đã có** keypair (laptop bạn đang dùng) | 1 dòng `echo '<pubkey>' >> ~<user>/.ssh/authorized_keys` | **Không** |
+
+**Vì sao [B] thường tốt hơn**: private key không rời khỏi máy sinh ra nó — đúng
+nguyên tắc mà chính bộ script này khuyến cáo. Mỗi thiết bị giữ key riêng, nên
+thu hồi quyền 1 thiết bị không ảnh hưởng thiết bị khác. Chọn [B] thì key script
+vừa sinh là **thừa**, xoá đi cho gọn.
+
+Sở dĩ script **mặc định** làm [A] vì nó giả định user mới là **người khác** cần
+được bàn giao quyền truy cập. Nếu user đó là chính bạn thì [B] hợp lý hơn.
+
+**Lưu ý bảo mật cho [A]**: private key được sinh ra **trên chính máy đích** (máy
+bạn vừa chạy script) — phải chuyển cho đúng người qua kênh an toàn (scp/sftp)
+rồi **xoá khỏi máy đích**, giống hệt lưu ý "Phương án B" ở cuối `vps_setup.sh`
+khi keypair lỡ sinh trên VPS thay vì trên máy client.
 
 ---
 
@@ -306,6 +378,6 @@ kết quả thật (port có nghe không) rồi mới fallback sang `service`.
 
 ## Version
 
-Cả 2 script in version ngay dòng đầu tiên khi chạy (`v$SCRIPT_VERSION`), kèm
-`CHANGELOG` chi tiết trong comment đầu file — xem trực tiếp trong file `.sh`
-để biết lịch sử các fix.
+Cả 2 script in version ngay dòng đầu tiên khi chạy (`v$SCRIPT_VERSION`). Lịch
+sử thay đổi xem qua `git log`/`git diff` của repo thay vì đọc comment trong
+file `.sh`.

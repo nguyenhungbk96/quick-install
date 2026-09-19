@@ -1,102 +1,19 @@
 #!/usr/bin/env bash
 #
 # local_setup.sh — Setup máy local (macOS hoặc Linux) để tự động mở SSH reverse tunnel
-# lên VPS, dùng autossh + service nền (LaunchAgent trên macOS, systemd --user trên Linux)
-# để tự chạy lại khi mất mạng/khởi động máy.
+# lên VPS, dùng autossh + service nền để tự chạy lại khi mất mạng/khởi động máy.
+#
+# Service nền dùng cơ chế nào là tuỳ CHẠY BẰNG AI:
+#   - user thường -> service theo user: LaunchAgent (macOS) / systemd --user (Linux)
+#   - root        -> service hệ thống:  LaunchDaemon (macOS) / systemd system unit
+#                    (Linux) — chạy từ lúc boot, không phụ thuộc ai đăng nhập
 #
 # Chạy đơn giản:
-#   ./local_setup.sh
+#   ./local_setup.sh          # tự dùng tài khoản hiện tại làm đích SSH
+#   sudo ./local_setup.sh     # provisioning: root tạo sẵn user + key cho người khác
 # Script sẽ hỏi từng bước: tạo/chọn key, IP VPS, user tunnel, các port cần forward.
 #
-# CHANGELOG:
-#   1.0.0 - Bản theo dõi version đầu tiên. Gồm các fix đã kiểm chứng bằng Docker:
-#           fix test kết nối SSH bị treo (bỏ -N khi chỉ auth-check), autossh cài
-#           qua apt/dnf/yum/pacman/brew tuỳ OS, service nền dùng systemd --user
-#           (Linux, tự bật linger + verify bus trước khi start) hoặc LaunchAgent
-#           (macOS), validate input (khoảng trắng phá cú pháp ExecStart/plist),
-#           StartLimitIntervalSec=0 để tunnel retry vô hạn khi mạng chập chờn,
-#           tự verify service active/loaded trước khi báo hoàn tất.
-#   1.0.1 - Fix bug: chạy lại script với port map khác (vd đổi remote SSH port
-#           2222 -> 2200) trước đây bị bỏ qua vì ~/.ssh/config đã có marker cũ,
-#           giữ config lỗi thời. Giờ luôn xoá block cũ và ghi lại mới mỗi lần
-#           chạy (idempotent thật sự, giống cách vps_setup.sh đã làm). Đã test
-#           lại bằng Docker: chạy 2 lần với port khác nhau, xác nhận config
-#           được cập nhật đúng, không trùng lặp.
-#   1.1.0 - Thêm bước [2/5] tự kiểm tra + tự cài đặt service đích trên máy này:
-#           nếu port map có local_port=22 mà chưa có gì lắng nghe, tự cài
-#           openssh-server (Linux) hoặc tự bật Remote Login (macOS) rồi verify
-#           lại bằng port thật (không cần cài thêm tool nào, dùng /dev/tcp có
-#           sẵn của bash). Port khác không tự biết cách chạy hộ thì cảnh báo
-#           rõ ràng thay vì để lỗi "connect_to localhost port X: failed" chỉ
-#           lộ ra sau khi tunnel đã chạy. Fix thêm 1 bug thật: kiểm tra
-#           `command -v systemctl` không đủ để biết systemd có thực sự chạy
-#           (container/WSL1/chroot có thể có binary nhưng gọi vào lỗi "Host is
-#           down") — giờ verify bằng port thật rồi mới fallback sang `service`,
-#           đã tái hiện và xác nhận fix bằng Docker.
-#   1.1.1 - Log rõ ràng hơn cho việc cài package: thêm hàm ensure_pkg in rõ
-#           "đã có sẵn -> BỎ QUA" / "CHƯA có -> đang cài" / "CÀI THÀNH CÔNG" /
-#           "CÀI THẤT BẠI" (dùng cho autossh, openssh-server), install_pkg in
-#           rõ đang dùng trình quản lý gói nào, và bước bật sshd (systemctl/
-#           service) cũng log rõ thử cách nào, cách nào thành công.
-#   1.2.0 - Fix lỗ hổng thiết kế: key "vps_tunnel" trước đây chỉ được VPS chấp
-#           nhận (xác thực tunnel), chưa được chính máy local authorize cho hop
-#           cuối -> "ssh home"/forward vào port 22 luôn bị hỏi mật khẩu dù đã
-#           setup xong. Giờ tự thêm public key vào chính
-#           ~/.ssh/authorized_keys của user hiện tại (nếu port map có forward
-#           tới local port 22), và thêm IdentityFile vào Host "home" trong ssh
-#           config. Đã test bằng Docker: login qua tunnel với BatchMode=yes
-#           (không cho hỏi password) thành công.
-#   1.3.0 - Fix bug thật gặp trên WSL: bước [2/5] tự cài openssh-server trước đây
-#           chỉ kiểm tra "binary sshd có tồn tại" để kết luận đã cài xong, nên có
-#           thể báo "đã có sẵn -> BỎ QUA" dù gói thực ra cài dở dang/thiếu hẳn unit
-#           systemd (`sudo systemctl status ssh` báo "Unit ssh.service could not
-#           be found") -> tunnel vẫn được tạo xong nhưng forward vào port 22 luôn
-#           lỗi "Connection closed" mà không có cảnh báo rõ ràng lúc setup. Giờ
-#           kiểm tra qua package manager (dpkg/rpm/pacman/apk) thay vì chỉ tin
-#           binary, và nếu systemctl enable báo "could not be found" thì tự cài
-#           lại + enable lại thay vì bỏ cuộc.
-#   1.4.0 - 2 fix thật gặp khi debug live trên WSL (Ubuntu, không có systemd PID 1
-#           sẵn sàng lúc apt chạy):
-#           a) `apt-get install openssh-server` có thể làm dpkg lỗi hẳn
-#              ("Could not execute systemctl ... dpkg: error processing package")
-#              vì postinst của gói tự gọi systemctl để enable service ngay trong
-#              lúc cài, mà lúc đó systemd chưa sẵn sàng nhận lệnh. Giờ cài qua apt
-#              với biến môi trường SYSTEMD_OFFLINE=1 (cơ chế chính thức của
-#              deb-systemd-helper để báo "đừng tự gọi systemctl lúc cài, để tôi tự
-#              enable/start sau") — bước enable/start thật vẫn do chính script
-#              làm ở phần sau như cũ, chỉ tránh crash lúc cài.
-#           b) Root cause thật sự khiến cả buổi debug: user gõ port map dạng
-#              remote_port:local_port nhưng nhập nhầm local_port trùng
-#              remote_port (vd "2224:2224" thay vì "2224:22") — sshd chạy đúng ở
-#              port 22 nhưng tunnel lại trỏ vào port 2224 (không ai lắng nghe).
-#              Script cũ CÓ cảnh báo lúc [2/5] nhưng chỉ 1 dòng giữa hàng chục
-#              dòng log khác nên bị bỏ sót, chỉ phát hiện được sau khi debug từ
-#              xa rất lâu. Giờ mọi port map chưa xác nhận sẵn sàng được gom lại
-#              và in thành 1 bảng CẢNH BÁO riêng, to, ở NGAY CUỐI script (sau khi
-#              đã báo cài đặt xong) — không thể lướt qua được nữa.
-#   1.5.0 - Thêm bước [Tuỳ chọn] ở cuối script: tạo thêm "remote user" khác trên
-#           chính máy đích, để nhiều người khác nhau cùng SSH vào máy này bằng
-#           tài khoản + key riêng của từng người (không phải chỉ user chạy
-#           script). Mỗi user tạo ra có full shell nhưng KHÔNG đặt password —
-#           chỉ đăng nhập được bằng SSH key riêng (khoá password bằng
-#           passwd -l/usermod -L trên Linux, sysadminctl -password - trên
-#           macOS). Tự sinh keypair ed25519 riêng cho từng user, cài public key
-#           vào đúng authorized_keys của user đó, tự thêm vào group
-#           com.apple.access_ssh nếu Remote Login trên macOS đang giới hạn theo
-#           danh sách user/group, và nhắc rõ 2 việc hay bị quên: (1) phải
-#           chuyển private key an toàn cho đúng người rồi xoá khỏi máy đích,
-#           (2) key đó còn phải được ĐĂNG KÝ THÊM trên VPS (chạy lại
-#           vps_setup.sh) thì mới ProxyJump qua VPS được — nếu không hop đầu sẽ
-#           luôn fail dù key đúng cho hop cuối. Giống hệt cách luồng tunnel
-#           chính đã làm (chờ xác nhận + tự verify thật bằng SSH thay vì chỉ in
-#           hướng dẫn rồi tin suông): tự SSH test hop cuối (vào máy này) ngay
-#           sau khi cài key — không cần chờ gì; rồi DỪNG LẠI chờ bạn xác nhận
-#           đã đăng ký key lên VPS xong mới tự SSH test tiếp hop đầu (nhảy qua
-#           VPS) — báo rõ CẢNH BÁO kèm chi tiết lỗi nếu 1 trong 2 hop chưa
-#           thông, thay vì chỉ đưa hướng dẫn rồi im lặng không biết đã đúng hay
-#           chưa.
-#
-SCRIPT_VERSION="1.5.0"
+SCRIPT_VERSION="1.9.0"
 
 set -euo pipefail
 
@@ -129,7 +46,55 @@ fi
 echo "=== Setup SSH reverse tunnel (máy local) — local_setup.sh v$SCRIPT_VERSION ==="
 echo ""
 
-read -r -p "Đường dẫn private key muốn dùng [$KEY_DEFAULT]: " KEY_PATH
+# ============================================================================
+# Hỏi 1 câu: LUÔN hiện được câu hỏi, và LUÔN đọc từ bàn phím thật.
+#
+# Vì sao không dùng thẳng `read -p` (2 lỗi thật đã gặp, đã tái hiện được):
+#   1) bash CHỈ in prompt của `read -p` khi stdin là terminal. Nếu stdin bị lệnh
+#      khác đọc mất (ssh, apt/debconf...) hoặc bị redirect, câu hỏi KHÔNG hiện ra
+#      -> người dùng chỉ thấy script "đứng im", không biết nó đang chờ trả lời.
+#   2) Nếu stdin đã hết (EOF), `read` trả về ngay chuỗi rỗng -> script âm thầm tự
+#      chọn mặc định, người dùng không kịp trả lời gì.
+# Cách làm: in câu hỏi bằng printf ra stdout (luôn nhìn thấy, vào cả file log nếu
+# có tee), và đọc thẳng từ /dev/tty (bàn phím thật) nếu có — không phụ thuộc stdin.
+# ============================================================================
+#
+# Thứ tự đọc: STDIN trước, chỉ khi STDIN đã hết (EOF) mới fallback sang /dev/tty.
+# KHÔNG đọc /dev/tty trước, vì như thế sẽ làm hỏng cách chạy tự động (đưa sẵn câu
+# trả lời qua pipe/heredoc): lúc đó câu trả lời nằm ở stdin, còn /dev/tty rỗng nên
+# script sẽ treo vô hạn — đã tái hiện đúng lỗi này khi test bằng Docker.
+ASK_REPLY=""
+ask() {
+  local prompt="$1" default="${2:-}"
+  ASK_REPLY=""
+  printf '%s' "$prompt"
+  if IFS= read -r ASK_REPLY; then
+    :
+  elif [[ -r /dev/tty ]] && IFS= read -r ASK_REPLY < /dev/tty; then
+    :
+  else
+    ASK_REPLY=""
+    printf '\n'
+  fi
+  [[ -n "$ASK_REPLY" ]] || ASK_REPLY="$default"
+}
+
+# Như ask() nhưng KHÔNG hiện ký tự gõ vào (dùng cho password).
+ask_secret() {
+  local prompt="$1"
+  ASK_REPLY=""
+  printf '%s' "$prompt"
+  if IFS= read -r -s ASK_REPLY; then
+    :
+  elif [[ -r /dev/tty ]] && IFS= read -r -s ASK_REPLY < /dev/tty; then
+    :
+  else
+    ASK_REPLY=""
+  fi
+  printf '\n'
+}
+
+ask "Đường dẫn private key muốn dùng [$KEY_DEFAULT]: " "$KEY_DEFAULT"; KEY_PATH="$ASK_REPLY"
 KEY_PATH="${KEY_PATH:-$KEY_DEFAULT}"
 KEY_PATH="${KEY_PATH/#\~/$HOME}"
 if [[ "$KEY_PATH" == *' '* ]]; then
@@ -141,7 +106,7 @@ if [[ -f "$KEY_PATH" ]]; then
   echo "    Đã có key tại $KEY_PATH, dùng lại key này."
 else
   echo "    Chưa có key tại $KEY_PATH."
-  read -r -p "Tạo mới key ed25519 tại đây? (Y/n): " ans
+  ask "Tạo mới key ed25519 tại đây? (Y/n): "; ans="$ASK_REPLY"
   if [[ "$ans" =~ ^[Nn]$ ]]; then
     echo "Dừng lại. Hãy chạy lại và trỏ đúng key đã có." >&2
     exit 1
@@ -156,15 +121,15 @@ echo "==> Nội dung public key (cần dán/copy sang VPS khi chạy vps_setup.s
 echo "----------------------------------------------------------------------"
 cat "$KEY_PATH.pub"
 echo "----------------------------------------------------------------------"
-read -r -p "Đã setup xong user tunnel trên VPS (chạy vps_setup.sh) chưa? Nhấn Enter để tiếp tục..." _
+ask "Đã setup xong user tunnel trên VPS (chạy vps_setup.sh) chưa? Nhấn Enter để tiếp tục..."
 
 echo ""
-read -r -p "IP hoặc domain của VPS: " VPS_IP
+ask "IP hoặc domain của VPS: "; VPS_IP="$ASK_REPLY"
 while [[ -z "$VPS_IP" || "$VPS_IP" == *' '* ]]; do
-  read -r -p "IP/domain không hợp lệ hoặc trống. Nhập lại: " VPS_IP
+  ask "IP/domain không hợp lệ hoặc trống. Nhập lại: "; VPS_IP="$ASK_REPLY"
 done
 
-read -r -p "Tên user tunnel trên VPS [tunneluser]: " TUNNEL_USER
+ask "Tên user tunnel trên VPS [tunneluser]: " "tunneluser"; TUNNEL_USER="$ASK_REPLY"
 TUNNEL_USER="${TUNNEL_USER:-tunneluser}"
 if [[ "$TUNNEL_USER" == *' '* ]]; then
   echo "Lỗi: tên user không được chứa khoảng trắng." >&2
@@ -175,9 +140,135 @@ echo ""
 echo "Nhập danh sách port muốn forward, dạng remote_port:local_port, cách nhau bởi dấu cách."
 echo "  remote_port : port sẽ mở trên VPS (chỉ bind localhost VPS, dùng qua SSH jump)"
 echo "  local_port  : port tương ứng trên máy bạn"
-read -r -p "Port map [2222:22 3000:3000]: " PORT_MAPS_RAW
+ask "Port map [2222:22 3000:3000]: " "2222:22 3000:3000"; PORT_MAPS_RAW="$ASK_REPLY"
 PORT_MAPS_RAW="${PORT_MAPS_RAW:-2222:22 3000:3000}"
 read -r -a PORT_MAPS <<< "$PORT_MAPS_RAW"
+
+# Port SSH THẬT của chính máy này, dùng xuyên suốt script thay cho số 22 cứng.
+# Mặc định 22, nhưng KHÔNG phải lúc nào cũng vậy: trên 1 máy Windows chạy NHIỀU
+# distro WSL, các distro dùng CHUNG network namespace nên chỉ 1 distro giữ được
+# port 22 — những distro còn lại BẮT BUỘC cho sshd nghe port khác, nếu không
+# tunnel sẽ âm thầm trỏ vào sshd của distro khác (bug thật đã gặp).
+SSH_LOCAL_PORT=""
+for pm in "${PORT_MAPS[@]}"; do
+  if [[ "${pm#*:}" == "22" ]]; then SSH_LOCAL_PORT="22"; break; fi
+done
+if [[ -z "$SSH_LOCAL_PORT" ]]; then
+  echo ""
+  echo "Port map không có local_port 22. Nếu bạn muốn SSH vào CHÍNH MÁY NÀY qua tunnel,"
+  echo "cho biết local_port nào là sshd của máy này — script sẽ tự cấu hình sshd nghe"
+  echo "đúng port đó (cần thiết khi 1 máy Windows chạy nhiều distro WSL: chỉ 1 distro"
+  echo "được giữ port 22, các distro khác phải dùng port riêng)."
+  ask "  local_port dùng cho SSH [để trống = không SSH vào máy này]: "; SSH_LOCAL_PORT="$ASK_REPLY"
+  if [[ -n "$SSH_LOCAL_PORT" ]]; then
+    if ! [[ "$SSH_LOCAL_PORT" =~ ^[0-9]+$ ]] || (( SSH_LOCAL_PORT < 1 || SSH_LOCAL_PORT > 65535 )); then
+      echo "Lỗi: port '$SSH_LOCAL_PORT' không hợp lệ." >&2
+      exit 1
+    fi
+    FOUND_IN_MAP=0
+    for pm in "${PORT_MAPS[@]}"; do
+      [[ "${pm#*:}" == "$SSH_LOCAL_PORT" ]] && FOUND_IN_MAP=1 && break
+    done
+    if [[ $FOUND_IN_MAP -eq 0 ]]; then
+      echo "Lỗi: '$SSH_LOCAL_PORT' không có trong port map đã nhập ($PORT_MAPS_RAW)." >&2
+      echo "Thêm 1 cặp dạng <remote_port>:$SSH_LOCAL_PORT rồi chạy lại." >&2
+      exit 1
+    fi
+    echo "    -> sshd của máy này sẽ dùng port $SSH_LOCAL_PORT."
+  fi
+fi
+
+# ============================================================================
+# Remote user: HỎI Ở ĐÂY (cùng cụm câu hỏi đầu script) nhưng TẠO Ở BƯỚC [3/6].
+#
+# Vì sao tách đôi thay vì hỏi-và-tạo luôn tại chỗ:
+#   - Hỏi hết 1 lượt ở đầu -> trả lời xong là script chạy liền mạch tới cuối,
+#     không bắt bạn ngồi canh để trả lời thêm giữa chừng.
+#   - Nhưng việc TẠO thật phải đợi sau bước [2/6], vì ngay sau khi tạo user
+#     script tự SSH thử vào chính user đó để kiểm chứng "đăng nhập được bằng
+#     key, không hỏi password" — muốn thử được thì sshd phải đã cài & chạy,
+#     mà đó chính là việc bước [2/6] lo.
+# ============================================================================
+NEW_USERNAMES=()
+NEW_PASSWORDS=()
+NEW_KEYPATHS=()
+NEW_SUDOMODES=()   # "no" | "pass" (sudo có hỏi password) | "nopass" (NOPASSWD)
+
+collect_remote_users() {
+  local ans username password password2 keypath key_default sudo_ans nopass_ans sudomode sudo_desc
+  echo ""
+  echo "Ngoài tài khoản đang chạy script, có cần TẠO THÊM user riêng trên máy này để"
+  echo "người khác SSH vào bằng tài khoản + key riêng của họ không? (mỗi người 1 user,"
+  echo "1 key riêng -> thu hồi quyền từng người không ảnh hưởng ai khác)"
+  ask "Tạo remote user? (y/N): " "n"; ans="$ASK_REPLY"
+
+  while [[ "$ans" =~ ^[Yy]$ ]]; do
+    ask "  Tên user muốn tạo: "; username="$ASK_REPLY"
+    if ! [[ "$username" =~ ^[a-z_][a-z0-9_-]*$ ]] || [[ "$username" == "root" ]]; then
+      echo "  Lỗi: tên user không hợp lệ (chỉ chữ thường/số/'_'/'-', bắt đầu bằng chữ hoặc '_', không dùng 'root')." >&2
+      ask "  Thử lại tên khác? (y/N): " "n"; ans="$ASK_REPLY"
+      continue
+    fi
+
+    echo "  Password cho '$username':"
+    echo "    - Để TRỐNG (Enter luôn) = không đặt password, chỉ đăng nhập được bằng SSH key."
+    echo "      An toàn nhất, và vẫn SSH vào bình thường được."
+    echo "    - Đặt password nếu user đó cần chạy 'sudo', hoặc cần đăng nhập tại màn hình máy."
+    ask_secret "  Password (Enter để bỏ trống): "; password="$ASK_REPLY"
+    if [[ -n "$password" ]]; then
+      ask_secret "  Nhập lại password: "; password2="$ASK_REPLY"
+      if [[ "$password" != "$password2" ]]; then
+        echo "  Lỗi: 2 lần nhập không khớp -> bỏ qua user này." >&2
+        ask "  Tạo user khác? (y/N): " "n"; ans="$ASK_REPLY"
+        continue
+      fi
+    fi
+
+    ask "  Cho '$username' quyền sudo? (y/N): " "n"; sudo_ans="$ASK_REPLY"
+    sudomode="no"
+    if [[ "$sudo_ans" =~ ^[Yy]$ ]]; then
+      ask "  sudo KHÔNG cần nhập password (NOPASSWD)? (y/N): " "n"; nopass_ans="$ASK_REPLY"
+      if [[ "$nopass_ans" =~ ^[Yy]$ ]]; then
+        sudomode="nopass"
+      else
+        sudomode="pass"
+        # sudo có hỏi password mà tài khoản lại KHÔNG có password thì không bao giờ
+        # dùng được sudo — cảnh báo ngay lúc hỏi thay vì để phát hiện lúc dùng.
+        if [[ -z "$password" ]]; then
+          echo "  CẢNH BÁO: '$username' không đặt password nhưng lại chọn sudo CÓ hỏi password" >&2
+          echo "  -> sẽ KHÔNG bao giờ sudo được. Chọn NOPASSWD, hoặc quay lại đặt password." >&2
+        fi
+      fi
+    fi
+
+    key_default="$HOME/.ssh/remote_${username}"
+    ask "  Đường dẫn lưu keypair riêng cho '$username' [$key_default]: " "$key_default"; keypath="$ASK_REPLY"
+    keypath="${keypath:-$key_default}"
+    if [[ "$keypath" == *' '* ]]; then
+      echo "  Lỗi: đường dẫn key không được chứa khoảng trắng -> bỏ qua user này." >&2
+      ask "  Tạo user khác? (y/N): " "n"; ans="$ASK_REPLY"
+      continue
+    fi
+
+    NEW_USERNAMES+=("$username")
+    NEW_PASSWORDS+=("$password")
+    NEW_KEYPATHS+=("$keypath")
+    NEW_SUDOMODES+=("$sudomode")
+    case "$sudomode" in
+      nopass) sudo_desc=", sudo KHÔNG cần password" ;;
+      pass)   sudo_desc=", có sudo (hỏi password)" ;;
+      *)      sudo_desc=", không sudo" ;;
+    esac
+    echo "  -> Đã ghi nhận '$username'$( [[ -n "$password" ]] && echo " (có password)" || echo " (không password, chỉ SSH key)" )${sudo_desc}, key: $keypath"
+
+    ask "  Tạo thêm user nữa? (y/N): " "n"; ans="$ASK_REPLY"
+  done
+
+  if [[ ${#NEW_USERNAMES[@]} -gt 0 ]]; then
+    echo "    Sẽ tạo ${#NEW_USERNAMES[@]} user ở bước [3/6] (sau khi sshd chắc chắn sẵn sàng): ${NEW_USERNAMES[*]}"
+  fi
+}
+collect_remote_users
 
 # Cài 1 package qua bất kỳ package manager nào có sẵn trên máy (brew/apt/dnf/yum/
 # pacman/zypper/apk). Dùng chung cho autossh và openssh-server để tránh lặp code.
@@ -195,7 +286,13 @@ install_pkg() {
     # sẵn sàng có thể làm cả gói bị lỗi hẳn ("Could not execute systemctl ...
     # dpkg: error processing package") — bước enable/start thật vẫn do chính
     # script này làm tường minh ở bước sau, nên an toàn khi tắt auto-enable ở đây.
-    $SUDO SYSTEMD_OFFLINE=1 apt-get install -y "$pkg"
+    # Bắt buộc dùng "env" chứ KHÔNG viết "$SUDO SYSTEMD_OFFLINE=1 apt-get ...":
+    # bash chỉ nhận diện "VAR=value" là gán biến lúc PARSE, tức là khi nó đứng ở
+    # đầu câu lệnh trong source code. Ở đây từ đầu tiên là "$SUDO", nên khi chạy
+    # bằng root ($SUDO rỗng) thì sau khi expand, "SYSTEMD_OFFLINE=1" lại bị coi
+    # là TÊN LỆNH -> lỗi "SYSTEMD_OFFLINE=1: command not found" và cài hụt gói.
+    # (Bug thật, đã tái hiện bằng Docker khi chạy script bằng root.)
+    $SUDO env SYSTEMD_OFFLINE=1 apt-get install -y "$pkg"
   elif command -v dnf &>/dev/null; then
     echo "    [gói] dùng dnf để cài '$pkg'..."
     $SUDO dnf install -y "$pkg"
@@ -264,8 +361,75 @@ sshd_really_installed() {
 # công cụ gì (dùng tính năng /dev/tcp có sẵn của bash).
 port_is_listening() {
   local port="$1"
-  (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null && { exec 3>&- 2>/dev/null; return 0; }
+  # QUAN TRỌNG — KHÔNG được viết `... && { exec 3>&- 2>/dev/null; return 0; }`
+  # như bản cũ: `exec` KHÔNG kèm lệnh sẽ áp redirect VĨNH VIỄN cho cả shell, nên
+  # `2>/dev/null` ở đó nuốt TOÀN BỘ stderr của script kể từ lần đầu hàm này trả
+  # về true. Mọi cảnh báo `>&2` phía sau (port chưa sẵn sàng, SSH test lỗi, tunnel
+  # không bind được port...) đều biến mất không dấu vết — cực kỳ nguy hiểm với
+  # script lấy "cảnh báo to, không im lặng" làm nguyên tắc. Bug thật, đã chứng
+  # minh bằng test và sửa ở v1.8.0.
+  # Không cần đóng fd thủ công: fd 3 mở trong subshell và tự đóng khi subshell thoát.
+  if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
+    return 0
+  fi
   return 1
+}
+
+# Máy này có phải WSL không. Quan trọng vì WSL2 có 1 đặc điểm rất dễ bẫy: MỌI
+# distro WSL2 chạy chung trong 1 máy ảo và dùng CHUNG network namespace (chung IP,
+# chung bảng port), nhưng TÁCH PID namespace (distro này không thấy tiến trình của
+# distro kia). Hệ quả: chỉ 1 distro giữ được port 22, và `hostname` của mọi distro
+# đều giống nhau (lấy tên máy Windows) nên không dùng để phân biệt được.
+is_wsl() {
+  [[ -n "${WSL_DISTRO_NAME:-}" ]] && return 0
+  grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null
+}
+
+# Port đang lắng nghe có thuộc về 1 tiến trình NHÌN THẤY ĐƯỢC từ chính máy/distro
+# này không?
+# Trả về false khi port có người giữ nhưng `ss` không kèm được tiến trình nào —
+# dấu hiệu điển hình của WSL nhiều distro: distro KHÁC đang giữ port trong network
+# namespace dùng chung, còn PID của nó thì distro này không nhìn thấy.
+# Đây chính là bug thật đã gặp: script thấy "port 22 có người nghe" liền kết luận
+# OK, tunnel dựng xong trỏ thẳng vào sshd của distro khác mà không cảnh báo gì.
+port_owned_here() {
+  local port="$1" line
+  command -v ss &>/dev/null || return 0        # không có ss -> không kết luận được
+  line="$($SUDO ss -tlnp 2>/dev/null | awk -v p=":$port" '$4 ~ (p "$") {print; exit}')"
+  [[ -z "$line" ]] && return 0
+  [[ "$line" == *"users:(("* ]]
+}
+
+# Ubuntu/Debian đời mới bật sẵn "socket activation": chính systemd (ssh.socket)
+# giữ port, sshd chỉ được gọi khi có kết nối. 2 hệ quả rất khó đoán:
+#   - "Port" trong /etc/ssh/sshd_config BỊ BỎ QUA (port do ssh.socket quyết định).
+#   - Nếu ssh.socket không bind được port (vd port 22 đã bị distro WSL khác giữ)
+#     thì ssh.service cũng chết theo: "A dependency job for ssh.service failed".
+# Tắt socket activation để sshd tự bind đúng port khai trong sshd_config.
+disable_ssh_socket_activation() {
+  command -v systemctl &>/dev/null || return 0
+  $SUDO systemctl is-enabled ssh.socket &>/dev/null || $SUDO systemctl is-active ssh.socket &>/dev/null || return 0
+  echo "    [sshd] phát hiện socket activation (ssh.socket đang giữ port) -> tắt để sshd tự bind port."
+  $SUDO systemctl disable --now ssh.socket 2>/dev/null || true
+  $SUDO systemctl enable --now ssh.service 2>/dev/null || $SUDO systemctl enable --now sshd.service 2>/dev/null || true
+}
+
+# Đặt sshd lắng nghe đúng port mong muốn. Cần cho trường hợp 1 máy Windows chạy
+# NHIỀU distro WSL: chung network namespace nên chỉ 1 distro giữ được port 22,
+# các distro còn lại BẮT BUỘC phải cho sshd nghe port khác.
+set_sshd_port() {
+  local port="$1" cfg="/etc/ssh/sshd_config"
+  [[ -f "$cfg" ]] || return 1
+  if $SUDO grep -qE "^[[:space:]]*Port[[:space:]]+${port}([[:space:]]|$)" "$cfg"; then
+    echo "    [sshd] sshd_config đã có 'Port $port' -> BỎ QUA."
+    return 0
+  fi
+  $SUDO cp "$cfg" "${cfg}.bak.$(date +%Y%m%d%H%M%S)"
+  $SUDO sed -i -E "s/^[[:space:]]*#?[[:space:]]*Port[[:space:]]+[0-9]+/Port ${port}/" "$cfg"
+  if ! $SUDO grep -qE "^[[:space:]]*Port[[:space:]]+${port}([[:space:]]|$)" "$cfg"; then
+    echo "Port ${port}" | $SUDO tee -a "$cfg" >/dev/null
+  fi
+  echo "    [sshd] đã đặt 'Port $port' trong sshd_config (đã backup ${cfg}.bak.*)."
 }
 
 # Lấy home directory của 1 user, tương thích cả macOS (dscl) và Linux (getent).
@@ -280,12 +444,369 @@ get_home_dir() {
 }
 
 echo ""
-echo "==> [1/5] Kiểm tra / cài autossh"
+# Cấp quyền sudo cho 1 user theo chế độ đã chọn ("pass" = sudo có hỏi password,
+# "nopass" = NOPASSWD).
+#
+# Ghi vào DROP-IN /etc/sudoers.d/<user> chứ không sửa /etc/sudoers gốc — an toàn,
+# dễ gỡ (xoá 1 file), cùng triết lý với cách vps_setup.sh xử lý sshd_config.d.
+# 3 cái bẫy của sudoers đều được xử lý ở đây:
+#   1) File sai cú pháp có thể làm sudo TỪ CHỐI HOẠT ĐỘNG trên cả máy -> luôn
+#      validate bằng `visudo -c -f` ở file tạm TRƯỚC khi đưa vào /etc/sudoers.d/.
+#   2) Quyền phải đúng 440 root:root, sai quyền thì sudo ÂM THẦM bỏ qua file.
+#   3) Tên file chứa dấu chấm hoặc '~' sẽ bị sudo bỏ qua (username của script chỉ
+#      cho phép [a-z0-9_-] nên luôn hợp lệ).
+grant_sudo() {
+  local user="$1" mode="$2" tmpf admin_group=""
+  [[ "$mode" == "no" ]] && return 0
+
+  if [[ "$OS" == "Darwin" ]]; then
+    echo "    [sudo] thêm '$user' vào group 'admin' (macOS)..."
+    $SUDO dseditgroup -o edit -a "$user" -t user admin 2>/dev/null || true
+  else
+    # Debian/Ubuntu dùng group 'sudo', RHEL/Arch/SUSE dùng 'wheel'.
+    if getent group sudo &>/dev/null; then
+      admin_group="sudo"
+    elif getent group wheel &>/dev/null; then
+      admin_group="wheel"
+    fi
+    if [[ -n "$admin_group" ]]; then
+      $SUDO usermod -aG "$admin_group" "$user" 2>/dev/null \
+        && echo "    [sudo] đã thêm '$user' vào group '$admin_group'." \
+        || echo "    [sudo] CẢNH BÁO: không thêm được '$user' vào group '$admin_group'." >&2
+    fi
+  fi
+
+  if [[ "$mode" == "nopass" ]]; then
+    if ! command -v visudo &>/dev/null; then
+      echo "    [sudo] CẢNH BÁO: không có 'visudo' để kiểm tra cú pháp -> BỎ QUA phần NOPASSWD" >&2
+      echo "    (không dám ghi vào /etc/sudoers.d/ khi chưa validate được — sai cú pháp có thể" >&2
+      echo "     làm hỏng sudo toàn máy). Tự thêm tay nếu cần." >&2
+      return 0
+    fi
+    tmpf="$(mktemp)"
+    echo "${user} ALL=(ALL) NOPASSWD:ALL" > "$tmpf"
+    if $SUDO visudo -c -f "$tmpf" &>/dev/null; then
+      $SUDO install -m 440 -o root -g "$( [[ "$OS" == "Darwin" ]] && echo wheel || echo root )" \
+        "$tmpf" "/etc/sudoers.d/${user}"
+      rm -f "$tmpf"
+      echo "    [sudo] đã cấp NOPASSWD qua /etc/sudoers.d/${user} (đã validate cú pháp)."
+      # KHÔNG viết `$SUDO -u "$user" ...`: khi chạy bằng root thì $SUDO rỗng, dòng
+      # đó thành lệnh `-u` -> luôn fail và báo CẢNH BÁO sai dù NOPASSWD đã hoạt
+      # động hoàn hảo (đã gặp thật lúc test). Dùng `su` để đổi user, chạy đúng cả
+      # khi là root ($SUDO rỗng) lẫn khi là user thường ($SUDO="sudo").
+      if $SUDO su - "$user" -c "sudo -n true" &>/dev/null; then
+        echo "    [sudo] đã kiểm chứng: '$user' chạy sudo KHÔNG cần password -> OK."
+      else
+        echo "    [sudo] CẢNH BÁO: đã ghi file nhưng test 'sudo -n' chưa thành công." >&2
+        echo "    Kiểm tra: sudo visudo -c   và   ls -l /etc/sudoers.d/${user} (phải 440 root)" >&2
+      fi
+    else
+      rm -f "$tmpf"
+      echo "    [sudo] LỖI: file sudoers sinh ra không hợp lệ -> KHÔNG cài (giữ sudo an toàn)." >&2
+    fi
+  else
+    echo "    [sudo] '$user' có sudo nhưng PHẢI nhập password mỗi lần."
+  fi
+}
+
+# Tạo thật các remote user đã khai ở đầu script. Chạy sau bước [2/6] để sshd
+# chắc chắn đã sẵn sàng, nhờ đó test đăng nhập ngay sau khi tạo mới có ý nghĩa.
+create_remote_users() {
+  [[ ${#NEW_USERNAMES[@]} -gt 0 ]] || return 0
+
+  local i username password keypath sudomode new_shell new_user_home new_ssh_dir new_group hop2_exit
+
+  if [[ "$OS" == "Darwin" ]]; then
+    new_shell="/bin/zsh"; [[ -x "$new_shell" ]] || new_shell="/bin/bash"
+  else
+    new_shell="/bin/bash"; [[ -x "$new_shell" ]] || new_shell="/bin/sh"
+  fi
+
+  for i in "${!NEW_USERNAMES[@]}"; do
+    username="${NEW_USERNAMES[$i]}"
+    password="${NEW_PASSWORDS[$i]}"
+    keypath="${NEW_KEYPATHS[$i]}"
+    sudomode="${NEW_SUDOMODES[$i]}"
+
+    echo ""
+    echo "  --- User '$username' ---"
+    if id "$username" &>/dev/null; then
+      echo "    User đã tồn tại -> BỎ QUA tạo mới (giữ nguyên password/cấu hình hiện có)."
+    else
+      if [[ "$OS" == "Darwin" ]]; then
+        if [[ -n "$password" ]]; then
+          $SUDO sysadminctl -addUser "$username" -fullName "$username" -password "$password" -home "/Users/$username" -shell "$new_shell"
+        else
+          # "-password -" = tạo tài khoản KHÔNG có password (không phải "hỏi
+          # password"), nên không ai đăng nhập bằng password được, chỉ SSH key.
+          $SUDO sysadminctl -addUser "$username" -fullName "$username" -password - -home "/Users/$username" -shell "$new_shell"
+        fi
+        # sysadminctl chạy bất đồng bộ — đợi tới khi user thực sự xuất hiện.
+        for _ in $(seq 1 10); do id "$username" &>/dev/null && break; sleep 1; done
+        $SUDO createhomedir -c -u "$username" &>/dev/null || true
+      else
+        $SUDO useradd -m -s "$new_shell" "$username"
+        if [[ -n "$password" ]]; then
+          # chpasswd đọc password qua STDIN (không nằm trên dòng lệnh) nên
+          # password không lộ ra trong `ps`.
+          echo "${username}:${password}" | $SUDO chpasswd
+          echo "    Đã đặt password."
+        else
+          # Khoá password: chỉ chặn ĐĂNG NHẬP BẰNG PASSWORD, không ảnh hưởng
+          # đăng nhập bằng SSH key (đã kiểm chứng bằng Docker).
+          $SUDO usermod -L "$username" 2>/dev/null || $SUDO passwd -l "$username" 2>/dev/null \
+            || echo "    Cảnh báo: không khoá được password, hãy tự kiểm tra thủ công." >&2
+        fi
+      fi
+      if ! id "$username" &>/dev/null; then
+        echo "    LỖI: tạo user '$username' thất bại -> bỏ qua user này." >&2
+        continue
+      fi
+      echo "    Đã tạo user (shell $new_shell$( [[ -n "$password" ]] && echo ", có password" || echo ", không password" ))."
+    fi
+
+    grant_sudo "$username" "$sudomode"
+
+    if [[ "$OS" == "Darwin" ]]; then
+      if $SUDO dscl . -read /Groups/com.apple.access_ssh &>/dev/null; then
+        echo "    Remote Login đang giới hạn theo group 'com.apple.access_ssh' -> thêm '$username' vào group."
+        $SUDO dseditgroup -o edit -a "$username" -t user com.apple.access_ssh
+      fi
+    fi
+
+    if [[ -f "$keypath" ]]; then
+      echo "    Đã có key tại $keypath -> dùng lại key này."
+    else
+      mkdir -p "$(dirname "$keypath")"
+      ssh-keygen -q -t ed25519 -f "$keypath" -N "" -C "remote-$username-$(date +%Y%m%d)"
+      echo "    Đã tạo keypair: $keypath (private) / $keypath.pub (public)"
+    fi
+
+    new_user_home="$(get_home_dir "$username")"
+    if [[ -z "$new_user_home" || ! -d "$new_user_home" ]]; then
+      echo "    LỖI: không tìm thấy home directory của '$username' -> bỏ qua." >&2
+      continue
+    fi
+    new_ssh_dir="$new_user_home/.ssh"
+    new_group="$(id -gn "$username")"
+    $SUDO mkdir -p "$new_ssh_dir"
+    $SUDO touch "$new_ssh_dir/authorized_keys"
+    if ! $SUDO grep -qF "$(cat "$keypath.pub")" "$new_ssh_dir/authorized_keys" 2>/dev/null; then
+      cat "$keypath.pub" | $SUDO tee -a "$new_ssh_dir/authorized_keys" >/dev/null
+      echo "    Đã thêm public key vào $new_ssh_dir/authorized_keys."
+    else
+      echo "    Key đã có sẵn trong authorized_keys -> bỏ qua (giữ nguyên key khác đã có)."
+    fi
+    $SUDO chown -R "$username:$new_group" "$new_ssh_dir"
+    $SUDO chmod 700 "$new_ssh_dir"
+    $SUDO chmod 600 "$new_ssh_dir/authorized_keys"
+
+    # Tự kiểm chứng ngay hop cuối (đăng nhập thẳng vào máy này), không phải chờ
+    # gì từ VPS. Dùng `ssh -n` để ssh không nuốt mất STDIN của các `read` sau đó.
+    echo "    [Hop cuối] Tự kiểm tra '$username' đăng nhập bằng key mới, không hỏi password..."
+    set +e
+    ssh -n -i "$keypath" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+      -p "$SSH_LOCAL_PORT" "${username}@127.0.0.1" true 2>/tmp/ssh_hop2_${username}.log
+    hop2_exit=$?
+    set -e
+    if [[ $hop2_exit -eq 0 ]]; then
+      echo "    OK — hop cuối đã thông."
+    else
+      echo "    CẢNH BÁO: hop cuối CHƯA thông (exit $hop2_exit). Chi tiết:" >&2
+      cat "/tmp/ssh_hop2_${username}.log" >&2
+    fi
+  done
+}
+
+# In hướng dẫn bàn giao cho các remote user vừa tạo. Chạy ở CUỐI script vì cần
+# $remote_ssh_port (chỉ biết sau khi đã chốt port map) và cần tunnel đã dựng xong
+# thì test "nhảy qua VPS" mới có ý nghĩa.
+report_remote_users() {
+  [[ ${#NEW_USERNAMES[@]} -gt 0 ]] || return 0
+
+  local i username keypath hop1_exit
+
+  echo ""
+  echo "########################################################################"
+  echo "##  BÀN GIAO ${#NEW_USERNAMES[@]} REMOTE USER VỪA TẠO"
+  echo "########################################################################"
+
+  for i in "${!NEW_USERNAMES[@]}"; do
+    username="${NEW_USERNAMES[$i]}"
+    keypath="${NEW_KEYPATHS[$i]}"
+    echo ""
+    echo "  ── [$username] ──────────────────────────────────────────────────"
+    echo "  Có 2 CÁCH để máy-sẽ-SSH đăng nhập được vào '$username'. Chọn 1:"
+    echo ""
+    echo "  [A] MANG PRIVATE KEY vừa sinh sang máy đó  (mặc định của script)"
+    echo "      Hợp khi '$username' là NGƯỜI KHÁC, hoặc máy đó chưa có key SSH nào."
+    echo "      Private key: $keypath"
+    echo "        # trên máy này:"
+    echo "        cat $keypath          # copy TOÀN BỘ, gồm cả dòng BEGIN/END"
+    echo "        # hoặc gửi qua kênh an toàn:"
+    echo "        scp $keypath <họ>@<máy_của_họ>:~/.ssh/"
+    echo "        # trên MÁY ĐÓ: dán vào ~/.ssh/<tên_file> rồi:  chmod 600 ~/.ssh/<tên_file>"
+    echo "        # rồi trỏ IdentityFile trong ~/.ssh/config tới file đó."
+    echo "      Sau khi máy đó đã nhận được key, XOÁ bản trên máy này — đừng để private"
+    echo "      key tồn tại ở 2 nơi lâu dài:"
+    echo "        shred -u $keypath 2>/dev/null || rm -f $keypath"
+    echo ""
+    echo "  [B] THÊM PUBLIC KEY của máy đó vào '$username'  (khuyến nghị nếu máy đó đã có key)"
+    echo "      Hợp nhất khi '$username' CHÍNH LÀ BẠN, trên 1 máy vốn đã có sẵn keypair"
+    echo "      (vd laptop bạn đang dùng để SSH) — lúc đó key script vừa sinh là THỪA."
+    echo "      Ưu điểm: KHÔNG có private key nào phải di chuyển, và mỗi thiết bị giữ key"
+    echo "      riêng của nó -> thu hồi 1 thiết bị không ảnh hưởng thiết bị khác."
+    echo "        # trên MÁY SẼ SSH: lấy public key của nó"
+    echo "        cat ~/.ssh/<key>.pub     # hoặc: ssh-keygen -y -f ~/.ssh/<key>"
+    echo "        # rồi trên máy này, thêm vào đúng user đó:"
+    echo "        echo '<dán public key vào đây>' >> $(get_home_dir "$username" 2>/dev/null || echo "/home/$username")/.ssh/authorized_keys"
+    echo "        chown $username: $(get_home_dir "$username" 2>/dev/null || echo "/home/$username")/.ssh/authorized_keys"
+    echo "        chmod 600 $(get_home_dir "$username" 2>/dev/null || echo "/home/$username")/.ssh/authorized_keys"
+    echo "      (Chọn B thì key script vừa sinh ở trên không cần dùng — xoá đi cho gọn.)"
+  done
+
+  if [[ -z "$remote_ssh_port" ]]; then
+    echo ""
+    echo "  CẢNH BÁO: port map lần này KHÔNG có local_port=22 nên chưa mở đường SSH vào" >&2
+    echo "  máy này qua tunnel — các user trên mới chỉ đăng nhập được từ trong mạng LAN." >&2
+    echo "  Chạy lại script và thêm 1 port map trỏ tới port SSH của máy này để mở hop đầu." >&2
+    echo "########################################################################"
+    return 0
+  fi
+
+  echo ""
+  echo "  CÒN 1 VIỆC BẮT BUỘC: các key trên mới chỉ được MÁY NÀY chấp nhận (hop cuối)."
+  echo "  Để các user đó tự nhảy qua VPS (hop đầu, ProxyJump vào '$TUNNEL_USER'), từng key"
+  echo "  còn phải được ĐĂNG KÝ THÊM trên VPS. Sang VPS chạy lại vps_setup.sh, nhập ĐÚNG"
+  echo "  cùng user '$TUNNEL_USER' và ĐÚNG cùng danh sách port như lần trước (vps_setup.sh"
+  echo "  ghi đè toàn bộ port list mỗi lần chạy — nhập thiếu port cũ sẽ bịt mất port đó),"
+  echo "  rồi dán lần lượt các public key dưới đây (vps_setup.sh tự APPEND, không xoá key"
+  echo "  của người khác đã có sẵn):"
+  echo ""
+  for i in "${!NEW_USERNAMES[@]}"; do
+    echo "  # ${NEW_USERNAMES[$i]}"
+    cat "${NEW_KEYPATHS[$i]}.pub"
+  done
+  echo ""
+  ask "  Đã dán xong các public key trên vào vps_setup.sh chưa? Nhấn Enter để tự kiểm tra..."
+
+  for i in "${!NEW_USERNAMES[@]}"; do
+    username="${NEW_USERNAMES[$i]}"
+    keypath="${NEW_KEYPATHS[$i]}"
+    echo "    [Hop đầu] Kiểm tra key của '$username' nhảy qua VPS ('$TUNNEL_USER@$VPS_IP')..."
+    set +e
+    ssh -n -i "$keypath" -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \
+      "${TUNNEL_USER}@${VPS_IP}" true 2>/tmp/ssh_hop1_${username}.log
+    hop1_exit=$?
+    set -e
+    if [[ $hop1_exit -eq 255 ]]; then
+      echo "    CẢNH BÁO: key của '$username' CHƯA nhảy qua VPS được. Chi tiết:" >&2
+      cat "/tmp/ssh_hop1_${username}.log" >&2
+    else
+      # Exit code khác 0 (nhưng không phải 255) là bình thường: $TUNNEL_USER bị
+      # ép ForceCommand /usr/sbin/nologin nên không chạy được lệnh "true".
+      echo "    OK — hop đầu đã thông."
+    fi
+  done
+
+  echo ""
+  echo "  Cấu hình ~/.ssh/config cho MÁY CỦA từng người (thay <private_key> bằng đường"
+  echo "  dẫn họ lưu key bạn gửi):"
+  echo ""
+  echo "    Host vps-jump"
+  echo "        HostName $VPS_IP"
+  echo "        User $TUNNEL_USER"
+  echo "        IdentityFile <private_key>"
+  for i in "${!NEW_USERNAMES[@]}"; do
+    username="${NEW_USERNAMES[$i]}"
+    echo ""
+    echo "    Host home-$username"
+    echo "        HostName localhost"
+    echo "        Port $remote_ssh_port"
+    echo "        User $username"
+    echo "        ProxyJump vps-jump"
+    echo "        IdentityFile <private_key>"
+  done
+  echo ""
+  echo "  Rồi họ dùng: ssh home-<tên_user>"
+  echo "########################################################################"
+}
+
+# Kiểm chứng tunnel có THỰC SỰ mở được port trên VPS hay không.
+#
+# Vì sao bắt buộc phải có: `systemctl is-active` (hoặc `launchctl list`) chỉ cho
+# biết autossh ĐANG CHẠY — hoàn toàn không nói forward có thành công hay không.
+# Nếu remote_port đã bị 1 tunnel khác chiếm (máy khác, hoặc service tunnel CŨ của
+# chính máy này còn sót lại), sshd trên VPS từ chối bind, ssh chỉ ghi 1 dòng
+#     Warning: remote port forwarding failed for listen port N
+# rồi autossh lặng lẽ thử lại mãi. Service vẫn "active" nên script BÁO ✔ NHẦM —
+# tunnel "chạy" suốt mà không ai vào được. Đây là bug thật đã gặp, và trước đây
+# script còn ghi hẳn "máy local không thể tự kiểm chứng port đã bind trên VPS":
+# hoá ra kiểm chứng được, chỉ cần đọc log của chính service vừa tạo.
+report_forward_status() {
+  local logtext="$1"
+  if echo "$logtext" | grep -qiE "remote port forwarding failed"; then
+    echo "" >&2
+    echo "########################################################################" >&2
+    echo "##  LỖI: tunnel ĐANG CHẠY nhưng KHÔNG mở được port trên VPS           ##" >&2
+    echo "########################################################################" >&2
+    echo "$logtext" | grep -iE "remote port forwarding failed" | tail -3 >&2
+    echo "" >&2
+    echo "  Nghĩa là autossh kết nối tới VPS OK, nhưng VPS TỪ CHỐI mở remote_port." >&2
+    echo "  2 nguyên nhân thường gặp:" >&2
+    echo "   1) remote_port ĐANG BỊ CHIẾM trên VPS — bởi máy khác, hoặc bởi chính" >&2
+    echo "      service tunnel CŨ của máy này còn sót (xem cảnh báo unit trùng phía trên)." >&2
+    echo "      Kiểm tra trên VPS:  sudo ss -tlnp | grep <remote_port>" >&2
+    echo "   2) remote_port chưa nằm trong PermitListen của user tunnel trên VPS" >&2
+    echo "      -> chạy lại vps_setup.sh và khai ĐỦ danh sách port (cả port cũ)." >&2
+    echo "########################################################################" >&2
+    return 1
+  fi
+  echo "    [forward] đã kiểm chứng qua log: không có lỗi 'remote port forwarding failed' -> port trên VPS đã mở thật."
+  return 0
+}
+
+verify_tunnel_forward() {
+  local kind="$1" ref="$2" logtext=""
+  sleep 3   # chờ autossh kết nối xong và thử mở port trên VPS
+  case "$kind" in
+    system) logtext="$($SUDO journalctl -u "$ref" -n 80 --no-pager 2>/dev/null || true)" ;;
+    user)   logtext="$(journalctl --user -u "$ref" -n 80 --no-pager 2>/dev/null || true)" ;;
+    file)   logtext="$($SUDO tail -n 80 "$ref" 2>/dev/null || true)" ;;
+  esac
+  if [[ -z "$logtext" ]]; then
+    echo "    [forward] không đọc được log ($kind: $ref) -> bỏ qua bước kiểm chứng forward." >&2
+    return 0
+  fi
+  report_forward_status "$logtext" || true
+}
+
+# Bản script <= 1.5.0 luôn tạo service kiểu `systemd --user`, KỂ CẢ khi chạy bằng
+# root. Từ 1.6.0 chạy bằng root sẽ tạo system unit TRÙNG TÊN. Nếu unit --user cũ
+# vẫn còn chạy, nó GIỮ remote_port trên VPS và unit mới không bind được — nhưng
+# vẫn "active" nên cực khó nhận ra. (Bug thật: 2 autossh song song cùng trỏ 1 port,
+# cái cũ 11 tiếng giữ port và forward sai đích, cái mới đúng thì bị chặn.)
+warn_stale_user_unit() {
+  local name="$1"
+  command -v systemctl &>/dev/null || return 0
+  if systemctl --user is-active --quiet "$name" 2>/dev/null; then
+    echo "" >&2
+    echo "    CẢNH BÁO: còn 1 service tunnel CŨ TRÙNG TÊN đang chạy ở cấp --user:" >&2
+    echo "      $name" >&2
+    echo "    Nó do bản script cũ tạo ra (bản cũ dùng systemd --user kể cả khi chạy root)," >&2
+    echo "    và đang GIỮ remote_port trên VPS khiến service mới không bind được." >&2
+    echo "    Dừng hẳn nó rồi khởi động lại service mới:" >&2
+    echo "      systemctl --user stop $name && systemctl --user disable $name" >&2
+    echo "      systemctl restart $name" >&2
+  fi
+}
+
+echo "==> [1/6] Kiểm tra / cài autossh"
 ensure_pkg "autossh" "command -v autossh" "autossh" || { echo "Cài autossh thủ công rồi chạy lại." >&2; exit 1; }
 AUTOSSH_BIN="$(command -v autossh)"
 
 echo ""
-echo "==> [2/5] Kiểm tra các port đích trên máy này (local_port) đã sẵn sàng chưa"
+echo "==> [2/6] Kiểm tra các port đích trên máy này (local_port) đã sẵn sàng chưa"
 # Đây chính là lỗi hay gặp nhất trên thực tế: tunnel kết nối lên VPS OK, nhưng
 # forward về máy local thất bại vì chưa có gì chạy ở local_port (vd sshd chưa cài
 # trên WSL/máy mới) -> lỗi "connect_to localhost port X: failed" chỉ hiện trong
@@ -297,12 +818,30 @@ UNVERIFIED_PORTS=()
 for pm in "${PORT_MAPS[@]}"; do
   local_p="${pm#*:}"
   if port_is_listening "$local_p"; then
-    echo "    [port] $local_p: đã có service lắng nghe -> BỎ QUA (không cần cài gì)."
+    # "Có người nghe" CHƯA chắc là service của chính máy/distro này. Trên WSL2,
+    # mọi distro dùng chung network namespace nên port 22 bạn thấy có thể là sshd
+    # của distro KHÁC -> tunnel sẽ trỏ nhầm sang distro đó mà không báo gì.
+    if port_owned_here "$local_p"; then
+      echo "    [port] $local_p: đã có service lắng nghe -> BỎ QUA (không cần cài gì)."
+    else
+      echo "" >&2
+      echo "    [port] $local_p: CẢNH BÁO NGHIÊM TRỌNG — port đang bị giữ bởi 1 tiến trình" >&2
+      echo "    KHÔNG thuộc máy/distro này (ss thấy port nhưng không thấy tiến trình nào)." >&2
+      if is_wsl; then
+        echo "    Máy này là WSL: mọi distro WSL2 dùng CHUNG network namespace, nên rất có thể" >&2
+        echo "    port $local_p đang thuộc về 1 distro WSL KHÁC trên cùng máy Windows." >&2
+        echo "    Nếu cứ tiếp tục, tunnel sẽ forward sang sshd của distro KIA — bạn tưởng đang" >&2
+        echo "    SSH vào distro này nhưng thật ra vào distro khác (rất khó phát hiện)." >&2
+        echo "    CÁCH SỬA: cho distro này dùng port riêng, vd khai port map <remote_port>:2224" >&2
+        echo "    rồi để script tự cấu hình sshd nghe 2224." >&2
+      fi
+      UNVERIFIED_PORTS+=("$pm (local_port $local_p bị tiến trình NGOÀI distro này chiếm — có thể là distro WSL khác)")
+    fi
     continue
   fi
 
-  if [[ "$local_p" == "22" ]]; then
-    echo "    [port] 22: CHƯA có gì lắng nghe — cần sshd để nhận SSH vào máy này."
+  if [[ -n "$SSH_LOCAL_PORT" && "$local_p" == "$SSH_LOCAL_PORT" ]]; then
+    echo "    [port] $local_p: CHƯA có gì lắng nghe — cần sshd để nhận SSH vào máy này."
     if [[ "$OS" == "Darwin" ]]; then
       REMOTE_LOGIN_STATUS="$($SUDO systemsetup -getremotelogin 2>/dev/null | awk -F': ' '{print $2}')"
       if [[ "$REMOTE_LOGIN_STATUS" == "On" ]]; then
@@ -315,6 +854,15 @@ for pm in "${PORT_MAPS[@]}"; do
     else
       ensure_pkg "openssh-server (sshd)" "sshd_really_installed" "openssh-server" \
         || install_pkg openssh
+
+      # Nếu cần sshd ở port KHÁC 22 thì phải làm 2 việc, thiếu 1 trong 2 là hỏng:
+      #   1) khai Port trong sshd_config, VÀ
+      #   2) tắt socket activation — vì khi ssh.socket còn bật thì chính nó giữ
+      #      port, "Port" trong sshd_config bị bỏ qua hoàn toàn.
+      if [[ "$local_p" != "22" ]]; then
+        set_sshd_port "$local_p" || true
+        disable_ssh_socket_activation
+      fi
       # QUAN TRỌNG: chỉ có "systemctl" trong PATH không có nghĩa là systemd đang
       # thực sự chạy làm init (PID 1) — container/WSL1/chroot thường có binary
       # nhưng gọi vào sẽ lỗi "Host is down". Phải verify bằng port_is_listening
@@ -324,6 +872,12 @@ for pm in "${PORT_MAPS[@]}"; do
       if command -v systemctl &>/dev/null; then
         echo "    [service] đang thử bật sshd qua systemctl..."
         ENABLE_ERR="$( { $SUDO systemctl enable --now ssh || $SUDO systemctl enable --now sshd; } 2>&1)" || true
+        # RESTART chứ không chỉ enable --now: nếu sshd ĐANG CHẠY SẴN với cấu hình
+        # cũ thì "start"/"enable --now" không làm gì cả, sshd vẫn giữ nguyên port
+        # cũ dù sshd_config vừa được đổi -> script tưởng đã cấu hình xong nhưng
+        # port mới không bao giờ mở. (Bug thật: sshd_config ghi Port 24 nhưng sshd
+        # vẫn nghe 2224 vì chưa hề được nạp lại.)
+        $SUDO systemctl restart ssh 2>/dev/null || $SUDO systemctl restart sshd 2>/dev/null || true
         if echo "$ENABLE_ERR" | grep -qi "could not be found"; then
           echo "    [service] systemctl báo KHÔNG tìm thấy unit ssh/sshd -> gói openssh-server" \
                "thực ra chưa cài xong dù bước kiểm tra trước đó tưởng đã có. Đang cài lại..."
@@ -331,10 +885,18 @@ for pm in "${PORT_MAPS[@]}"; do
           $SUDO systemctl daemon-reload 2>/dev/null || true
           $SUDO systemctl enable --now ssh 2>/dev/null || $SUDO systemctl enable --now sshd 2>/dev/null || true
         fi
+        # "A dependency job for ssh.service failed" = gần như luôn do ssh.socket
+        # không bind được port (vd port đã bị distro WSL khác giữ). Sửa bằng cách
+        # tắt socket activation rồi thử lại, thay vì bỏ cuộc với 1 thông báo khó hiểu.
+        if echo "$ENABLE_ERR" | grep -qiE "dependency job .* failed|Failed to listen on"; then
+          echo "    [service] systemctl báo lỗi phụ thuộc -> nghi do socket activation (ssh.socket)."
+          disable_ssh_socket_activation
+          $SUDO systemctl restart ssh 2>/dev/null || $SUDO systemctl restart sshd 2>/dev/null || true
+        fi
         sleep 1
-        if port_is_listening "22"; then
+        if port_is_listening "$local_p"; then
           SSHD_STARTED=1
-          echo "    [service] systemctl: THÀNH CÔNG (port 22 đã lắng nghe)."
+          echo "    [service] systemctl: THÀNH CÔNG (port $local_p đã lắng nghe)."
         else
           echo "    [service] systemctl: không có tác dụng thật (thường do container/WSL1/chroot" \
                "không có systemd PID 1 thật) -> fallback sang 'service'."
@@ -342,14 +904,16 @@ for pm in "${PORT_MAPS[@]}"; do
       fi
       if [[ $SSHD_STARTED -eq 0 ]]; then
         echo "    [service] đang thử bật sshd qua 'service'..."
-        $SUDO service ssh start 2>/dev/null || $SUDO service sshd start 2>/dev/null || true
+        # restart (không phải start) — lý do như trên: sshd đang chạy sẵn sẽ bỏ qua "start".
+        $SUDO service ssh restart 2>/dev/null || $SUDO service sshd restart 2>/dev/null \
+          || $SUDO service ssh start 2>/dev/null || $SUDO service sshd start 2>/dev/null || true
       fi
     fi
     sleep 1
-    if port_is_listening "22"; then
-      echo "    [port] 22: đã lắng nghe sau khi cài/bật sshd -> OK."
+    if port_is_listening "$local_p"; then
+      echo "    [port] $local_p: đã lắng nghe sau khi cài/bật sshd -> OK."
     else
-      echo "    [port] 22: CẢNH BÁO — vẫn CHƯA lắng nghe sau khi cố cài/bật sshd." >&2
+      echo "    [port] $local_p: CẢNH BÁO — vẫn CHƯA lắng nghe sau khi cố cài/bật sshd." >&2
       echo "    Tunnel vẫn sẽ được tạo, nhưng forward tới port này sẽ lỗi cho đến khi bạn tự kiểm tra sshd." >&2
       UNVERIFIED_PORTS+=("$pm (sshd không tự bật được)")
     fi
@@ -361,7 +925,16 @@ for pm in "${PORT_MAPS[@]}"; do
   fi
 done
 
-echo "==> [3/5] Test kết nối SSH tới VPS trước khi tạo service nền"
+if [[ ${#NEW_USERNAMES[@]} -gt 0 ]]; then
+  echo ""
+  echo "==> [3/6] Tạo ${#NEW_USERNAMES[@]} remote user đã khai ở đầu script"
+  create_remote_users
+  echo ""
+else
+  echo "==> [3/6] Không có remote user nào cần tạo -> BỎ QUA."
+fi
+
+echo "==> [4/6] Test kết nối SSH tới VPS trước khi tạo service nền"
 # Không dùng -N ở đây: -N giữ session mở vô thời hạn để chờ forward, nếu không có
 # request forward nào thì lệnh sẽ treo mãi. Ta chỉ cần biết AUTHENTICATION có qua không.
 set +e
@@ -375,7 +948,7 @@ if [[ $SSH_TEST_EXIT -eq 255 ]]; then
   echo "Chi tiết lỗi:" >&2
   cat /tmp/ssh_test_err.log >&2
   echo "Kiểm tra lại: user đã được tạo trên VPS chưa, public key đã đúng chưa." >&2
-  read -r -p "Vẫn tiếp tục cài service nền? (y/N) " ans
+  ask "Vẫn tiếp tục cài service nền? (y/N) " "n"; ans="$ASK_REPLY"
   [[ "$ans" =~ ^[Yy]$ ]] || exit 1
 else
   # Exit code khác 0 (nhưng không phải 255) là bình thường: user tunnel bị ép
@@ -383,7 +956,7 @@ else
   echo "    Kết nối SSH tới VPS OK (xác thực thành công)."
 fi
 
-echo "==> [4/5] Tạo ~/.ssh/config entry để truy cập máy local qua VPS"
+echo "==> [5/6] Tạo ~/.ssh/config entry để truy cập máy local qua VPS"
 SSH_CONFIG="$HOME/.ssh/config"
 touch "$SSH_CONFIG"
 chmod 600 "$SSH_CONFIG"
@@ -397,9 +970,11 @@ if grep -qF "$MARKER_START" "$SSH_CONFIG" 2>/dev/null; then
   rm -f "${SSH_CONFIG}.bak"
 fi
 
+# remote_port nào trên VPS dẫn tới sshd của máy này — dựa vào $SSH_LOCAL_PORT
+# (không còn giả định cứng là 22, xem lý do ở phần xác định SSH_LOCAL_PORT).
 remote_ssh_port=""
 for pm in "${PORT_MAPS[@]}"; do
-  if [[ "${pm#*:}" == "22" ]]; then
+  if [[ -n "$SSH_LOCAL_PORT" && "${pm#*:}" == "$SSH_LOCAL_PORT" ]]; then
     remote_ssh_port="${pm%%:*}"
     break
   fi
@@ -413,13 +988,13 @@ if [[ -n "$remote_ssh_port" && $IS_ROOT -eq 1 ]]; then
   echo ""
   echo "    Đang chạy bằng root. Bạn có muốn authorize key này để SSH THẲNG VÀO ROOT"
   echo "    qua tunnel không? (thường KHÔNG cần: người dùng thật sẽ SSH vào các user"
-  echo "    riêng tạo ở bước cuối script, an toàn hơn nhiều so với login thẳng root)"
-  read -r -p "    Mở SSH vào root? (y/N): " ans
+  echo "    riêng đã khai ở đầu script, an toàn hơn nhiều so với login thẳng root)"
+  ask "    Mở SSH vào root? (y/N): " "n"; ans="$ASK_REPLY"
   if [[ "$ans" =~ ^[Yy]$ ]]; then
     AUTHORIZE_SELF=1
   else
     AUTHORIZE_SELF=0
-    echo "    -> BỎ QUA (không mở SSH vào root). Tạo user riêng ở bước cuối script để dùng."
+    echo "    -> BỎ QUA (không mở SSH vào root). Dùng các remote user tạo ở bước [3/6]."
   fi
 fi
 
@@ -484,7 +1059,7 @@ if [[ $IS_ROOT -eq 1 ]]; then
   # dùng thật chỉ SSH vào user riêng của họ".
   # ==========================================================================
   if [[ "$OS" == "Darwin" ]]; then
-    echo "==> [5/5] Tạo LaunchDaemon (macOS, chạy bằng root) để tunnel tự chạy nền + tự reconnect"
+    echo "==> [6/6] Tạo LaunchDaemon (macOS, chạy bằng root) để tunnel tự chạy nền + tự reconnect"
     PLIST_LABEL="com.vpstunnel.$VPS_IP"
     PLIST_PATH="/Library/LaunchDaemons/${PLIST_LABEL}.plist"
 
@@ -547,6 +1122,7 @@ EOF
     echo ""
     if launchctl list "$PLIST_LABEL" &>/dev/null; then
       echo "✔ LaunchDaemon đã load. Tunnel đang chạy nền (chạy từ lúc boot, không cần ai đăng nhập): $PLIST_LABEL"
+      verify_tunnel_forward file "/var/log/${PLIST_LABEL}.err.log"
     else
       echo "✘ LaunchDaemon KHÔNG load được. Xem log:" >&2
       tail -n 20 "/var/log/${PLIST_LABEL}.err.log" 2>/dev/null >&2 || true
@@ -558,7 +1134,7 @@ EOF
     echo "  - Chạy lại:      launchctl load -w $PLIST_PATH"
 
   else
-    echo "==> [5/5] Tạo systemd system service (Linux, chạy bằng root) để tunnel tự chạy nền + tự reconnect"
+    echo "==> [6/6] Tạo systemd system service (Linux, chạy bằng root) để tunnel tự chạy nền + tự reconnect"
 
     if ! command -v systemctl &>/dev/null; then
       echo "Lỗi: không có 'systemctl' trên máy này, không thể tạo service nền theo cách chuẩn." >&2
@@ -600,6 +1176,8 @@ EOF
     echo ""
     if systemctl is-active --quiet "$SERVICE_NAME"; then
       echo "✔ Service đang chạy (active). Tunnel chạy nền từ lúc boot, không cần ai đăng nhập: $SERVICE_NAME"
+      warn_stale_user_unit "$SERVICE_NAME"
+      verify_tunnel_forward system "$SERVICE_NAME"
     else
       echo "✘ Service KHÔNG active sau khi start. Xem log để biết lý do:" >&2
       systemctl status "$SERVICE_NAME" --no-pager >&2 || true
@@ -617,7 +1195,7 @@ EOF
   echo "  Kiểm tra trên VPS: sudo ss -tlnp | grep -E '$(echo "${PORT_MAPS[@]}" | tr ' ' '\n' | cut -d: -f1 | paste -sd'|')'"
 
 elif [[ "$OS" == "Darwin" ]]; then
-  echo "==> [5/5] Tạo LaunchAgent (macOS) để tunnel tự chạy nền + tự reconnect"
+  echo "==> [6/6] Tạo LaunchAgent (macOS) để tunnel tự chạy nền + tự reconnect"
   PLIST_LABEL="com.$USER.vpstunnel.$VPS_IP"
   PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
 
@@ -677,6 +1255,7 @@ EOF
   echo ""
   if launchctl list "$PLIST_LABEL" &>/dev/null; then
     echo "✔ LaunchAgent đã load. Tunnel đang chạy nền: $PLIST_LABEL"
+    verify_tunnel_forward file "/tmp/${PLIST_LABEL}.err.log"
   else
     echo "✘ LaunchAgent KHÔNG load được. Xem log:" >&2
     tail -n 20 "/tmp/${PLIST_LABEL}.err.log" 2>/dev/null >&2 || true
@@ -691,7 +1270,7 @@ EOF
   echo "  Kiểm tra trên VPS: sudo ss -tlnp | grep -E '$(echo "${PORT_MAPS[@]}" | tr ' ' '\n' | cut -d: -f1 | paste -sd'|')'"
 
 else
-  echo "==> [5/5] Tạo systemd --user service (Linux) để tunnel tự chạy nền + tự reconnect"
+  echo "==> [6/6] Tạo systemd --user service (Linux) để tunnel tự chạy nền + tự reconnect"
 
   if ! command -v systemctl &>/dev/null; then
     echo "Lỗi: không có 'systemctl' trên máy này, không thể tạo service nền theo cách chuẩn." >&2
@@ -760,6 +1339,7 @@ EOF
   echo ""
   if systemctl --user is-active --quiet "$SERVICE_NAME"; then
     echo "✔ Service đang chạy (active). Tunnel đang chạy nền qua systemd: $SERVICE_NAME"
+    verify_tunnel_forward user "$SERVICE_NAME"
   else
     echo "✘ Service KHÔNG active sau khi start. Xem log để biết lý do:" >&2
     systemctl --user status "$SERVICE_NAME" --no-pager >&2 || true
@@ -779,7 +1359,7 @@ fi
 if [[ -n "$remote_ssh_port" && $AUTHORIZE_SELF -eq 1 ]]; then
   echo "  - SSH vào máy này từ bất kỳ đâu (có ~/.ssh/config này): ssh home"
 elif [[ -n "$remote_ssh_port" ]]; then
-  echo "  - Chưa có tài khoản nào SSH vào máy này được qua tunnel — tạo ở bước cuối script."
+  echo "  - Chưa có tài khoản nào SSH vào máy này được qua tunnel — dùng các remote user tạo ở bước [3/6]."
 fi
 
 if [[ ${#UNVERIFIED_PORTS[@]} -gt 0 ]]; then
@@ -799,188 +1379,5 @@ if [[ ${#UNVERIFIED_PORTS[@]} -gt 0 ]]; then
   echo "########################################################################"
 fi
 
-# ============================================================================
-# [Tuỳ chọn] Thêm remote user khác trên máy này — để nhiều người khác nhau
-# cùng SSH vào máy này bằng tài khoản + key riêng của từng người, thay vì dùng
-# chung 1 tài khoản. Mỗi user tạo ra: full shell (dùng máy bình thường qua SSH)
-# nhưng KHÔNG có password — chỉ đăng nhập được bằng SSH key riêng, giống cách
-# vps_setup.sh tạo user tunnel-only trên VPS (nhưng ở đây có shell vì mục đích
-# là để dùng máy, không phải chỉ tunnel).
-#
-# Tận dụng lại $VPS_IP/$TUNNEL_USER/$remote_ssh_port đã hỏi ở phần setup tunnel
-# phía trên — không hỏi lại các thông tin này.
-# ============================================================================
-add_remote_user() {
-  echo ""
-  read -r -p "Tên user mới muốn tạo: " NEW_USERNAME
-  if ! [[ "$NEW_USERNAME" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
-    echo "Lỗi: tên user không hợp lệ (chỉ chữ thường, số, '_', '-', bắt đầu bằng chữ hoặc '_')." >&2
-    return 1
-  fi
-  if [[ "$NEW_USERNAME" == "root" ]]; then
-    echo "Lỗi: không tạo user 'root' bằng bước này." >&2
-    return 1
-  fi
+report_remote_users
 
-  local new_shell
-  if [[ "$OS" == "Darwin" ]]; then
-    new_shell="/bin/zsh"; [[ -x "$new_shell" ]] || new_shell="/bin/bash"
-  else
-    new_shell="/bin/bash"; [[ -x "$new_shell" ]] || new_shell="/bin/sh"
-  fi
-
-  echo "    Tạo user '$NEW_USERNAME' (full shell, KHÔNG đặt password — chỉ SSH key mới đăng nhập được)..."
-  if id "$NEW_USERNAME" &>/dev/null; then
-    echo "    User $NEW_USERNAME đã tồn tại, bỏ qua bước tạo user (giữ nguyên password/cấu hình hiện có)."
-  else
-    if [[ "$OS" == "Darwin" ]]; then
-      $SUDO sysadminctl -addUser "$NEW_USERNAME" -fullName "$NEW_USERNAME" -password - -home "/Users/$NEW_USERNAME" -shell "$new_shell"
-      # sysadminctl chạy bất đồng bộ — đợi tới khi user thực sự xuất hiện rồi mới đi tiếp.
-      for _ in $(seq 1 10); do id "$NEW_USERNAME" &>/dev/null && break; sleep 1; done
-      $SUDO createhomedir -c -u "$NEW_USERNAME" &>/dev/null || true
-    else
-      $SUDO useradd -m -s "$new_shell" "$NEW_USERNAME"
-      $SUDO usermod -L "$NEW_USERNAME" 2>/dev/null || $SUDO passwd -l "$NEW_USERNAME" 2>/dev/null \
-        || echo "    Cảnh báo: không khoá được password, hãy tự kiểm tra thủ công." >&2
-    fi
-    if ! id "$NEW_USERNAME" &>/dev/null; then
-      echo "Lỗi: tạo user '$NEW_USERNAME' thất bại." >&2
-      return 1
-    fi
-    echo "    Đã tạo user $NEW_USERNAME."
-  fi
-
-  if [[ "$OS" == "Darwin" ]]; then
-    if $SUDO dscl . -read /Groups/com.apple.access_ssh &>/dev/null; then
-      echo "    Remote Login đang giới hạn theo group 'com.apple.access_ssh' -> thêm '$NEW_USERNAME' vào group này."
-      $SUDO dseditgroup -o edit -a "$NEW_USERNAME" -t user com.apple.access_ssh
-    fi
-  fi
-
-  local new_key_default="$HOME/.ssh/remote_${NEW_USERNAME}"
-  read -r -p "Đường dẫn lưu keypair riêng cho '$NEW_USERNAME' [$new_key_default]: " NEW_KEY_PATH
-  NEW_KEY_PATH="${NEW_KEY_PATH:-$new_key_default}"
-  if [[ "$NEW_KEY_PATH" == *' '* ]]; then
-    echo "Lỗi: đường dẫn key không được chứa khoảng trắng." >&2
-    return 1
-  fi
-  if [[ -f "$NEW_KEY_PATH" ]]; then
-    echo "    Đã có key tại $NEW_KEY_PATH, dùng lại key này."
-  else
-    mkdir -p "$(dirname "$NEW_KEY_PATH")"
-    ssh-keygen -t ed25519 -f "$NEW_KEY_PATH" -N "" -C "remote-$NEW_USERNAME-$(date +%Y%m%d)"
-    echo "    Đã tạo keypair: $NEW_KEY_PATH (private) / $NEW_KEY_PATH.pub (public)"
-  fi
-
-  local new_user_home new_ssh_dir new_group
-  new_user_home="$(get_home_dir "$NEW_USERNAME")"
-  if [[ -z "$new_user_home" || ! -d "$new_user_home" ]]; then
-    echo "Lỗi: không tìm thấy home directory của user '$NEW_USERNAME'." >&2
-    return 1
-  fi
-  new_ssh_dir="$new_user_home/.ssh"
-  $SUDO mkdir -p "$new_ssh_dir"
-  $SUDO touch "$new_ssh_dir/authorized_keys"
-  if ! $SUDO grep -qF "$(cat "$NEW_KEY_PATH.pub")" "$new_ssh_dir/authorized_keys" 2>/dev/null; then
-    cat "$NEW_KEY_PATH.pub" | $SUDO tee -a "$new_ssh_dir/authorized_keys" >/dev/null
-    echo "    Đã thêm public key vào $new_ssh_dir/authorized_keys."
-  else
-    echo "    Key đã có sẵn trong authorized_keys, bỏ qua (giữ nguyên các key khác đã có)."
-  fi
-  new_group="$(id -gn "$NEW_USERNAME")"
-  $SUDO chown -R "$NEW_USERNAME:$new_group" "$new_ssh_dir"
-  $SUDO chmod 700 "$new_ssh_dir"
-  $SUDO chmod 600 "$new_ssh_dir/authorized_keys"
-
-  echo ""
-  echo "    [Hop cuối] Đang tự kiểm tra: '$NEW_USERNAME' đăng nhập được vào MÁY NÀY bằng key mới chưa..."
-  set +e
-  ssh -n -i "$NEW_KEY_PATH" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
-    -p 22 "${NEW_USERNAME}@127.0.0.1" true 2>/tmp/ssh_newuser_hop2_err.log
-  local hop2_exit=$?
-  set -e
-  if [[ $hop2_exit -eq 0 ]]; then
-    echo "    OK — hop cuối (vào đúng user trên máy này) đã hoạt động, không hỏi password."
-  else
-    echo "    CẢNH BÁO: hop cuối CHƯA hoạt động (exit $hop2_exit). Chi tiết lỗi:" >&2
-    cat /tmp/ssh_newuser_hop2_err.log >&2
-    echo "    User vẫn được tạo, nhưng cần tự debug trước khi bàn giao cho '$NEW_USERNAME'." >&2
-  fi
-
-  echo ""
-  echo "------------------------------------------------------------------------"
-  echo "  User '$NEW_USERNAME' đã tạo xong (full shell, không password)."
-  echo "------------------------------------------------------------------------"
-  echo "  Private key vừa sinh: $NEW_KEY_PATH"
-  echo ""
-  echo "  QUAN TRỌNG 1: nếu '$NEW_USERNAME' là NGƯỜI KHÁC (không phải bạn), private"
-  echo "  key này phải được chuyển cho họ qua kênh an toàn (scp/sftp) rồi XOÁ khỏi"
-  echo "  máy này — không nên để private key tồn tại ở 2 nơi lâu dài:"
-  echo "    scp $NEW_KEY_PATH <họ>@<máy_của_họ>:~/.ssh/"
-  echo "    shred -u $NEW_KEY_PATH 2>/dev/null || rm -f $NEW_KEY_PATH   # chạy SAU khi họ đã nhận key"
-  echo ""
-
-  if [[ -z "$remote_ssh_port" ]]; then
-    echo "  Lần chạy này không forward port 22 lên VPS (không có local_port=22 trong"
-    echo "  port map) nên '$NEW_USERNAME' CHƯA thể SSH vào máy này từ xa qua tunnel —"
-    echo "  chỉ mới SSH được khi đang ở cùng mạng local (test hop cuối ở trên)."
-    echo "  Chạy lại local_setup.sh và thêm 1 port map dạng <remote_port>:22 để mở hop đầu." >&2
-    echo "------------------------------------------------------------------------"
-    return 0
-  fi
-
-  echo "  QUAN TRỌNG 2: key này mới chỉ được MÁY NÀY chấp nhận (hop cuối). Để"
-  echo "  '$NEW_USERNAME' tự nhảy qua VPS được (hop đầu, ProxyJump vào '$TUNNEL_USER'),"
-  echo "  key này còn phải được ĐĂNG KÝ THÊM trên VPS. Sang VPS, chạy lại vps_setup.sh,"
-  echo "  nhập ĐÚNG cùng user '$TUNNEL_USER' và ĐÚNG cùng danh sách port như lần trước"
-  echo "  (vps_setup.sh ghi đè toàn bộ port list mỗi lần chạy — nhập thiếu port cũ sẽ"
-  echo "  vô tình bịt mất port đó), rồi dán public key dưới đây khi được hỏi"
-  echo "  (vps_setup.sh tự APPEND, không xoá key của người khác đã có sẵn):"
-  echo ""
-  cat "$NEW_KEY_PATH.pub"
-  echo ""
-  read -r -p "  Đã dán public key ở trên vào vps_setup.sh trên VPS xong chưa? Nhấn Enter để tự kiểm tra..." _
-
-  echo "    [Hop đầu] Đang tự kiểm tra: key mới có nhảy qua VPS ('$TUNNEL_USER@$VPS_IP') được chưa..."
-  set +e
-  ssh -n -i "$NEW_KEY_PATH" -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \
-    "${TUNNEL_USER}@${VPS_IP}" true 2>/tmp/ssh_newuser_hop1_err.log
-  local hop1_exit=$?
-  set -e
-  if [[ $hop1_exit -eq 255 ]]; then
-    echo "    CẢNH BÁO: CHƯA nhảy qua VPS được bằng key mới (auth thất bại). Chi tiết lỗi:" >&2
-    cat /tmp/ssh_newuser_hop1_err.log >&2
-    echo "    Kiểm tra lại: đã dán ĐÚNG public key ở trên vào vps_setup.sh, đúng user '$TUNNEL_USER' chưa." >&2
-    echo "    (Có thể dán lại và chạy lại vps_setup.sh bất cứ lúc nào — không xoá key khác đã có.)" >&2
-  else
-    # Exit code khác 0 (nhưng không phải 255) là bình thường: $TUNNEL_USER bị ép
-    # ForceCommand /usr/sbin/nologin nên không chạy lệnh "true" được, nhưng auth đã OK.
-    echo "    OK — hop đầu (nhảy qua VPS) đã hoạt động."
-  fi
-
-  echo ""
-  echo "  Trên máy của '$NEW_USERNAME', thêm vào ~/.ssh/config:"
-  echo ""
-  echo "    Host vps-jump"
-  echo "        HostName $VPS_IP"
-  echo "        User $TUNNEL_USER"
-  echo "        IdentityFile <đường_dẫn_họ_lưu_private_key_ở_trên>"
-  echo ""
-  echo "    Host home-$NEW_USERNAME"
-  echo "        HostName localhost"
-  echo "        Port $remote_ssh_port"
-  echo "        User $NEW_USERNAME"
-  echo "        ProxyJump vps-jump"
-  echo "        IdentityFile <đường_dẫn_họ_lưu_private_key_ở_trên>"
-  echo ""
-  echo "  Rồi dùng: ssh home-$NEW_USERNAME"
-  echo "------------------------------------------------------------------------"
-}
-
-echo ""
-read -r -p "Tạo thêm remote user khác trên máy này (để người khác SSH vào bằng tài khoản + key riêng)? (y/N): " ADD_USER_ANS
-while [[ "$ADD_USER_ANS" =~ ^[Yy]$ ]]; do
-  add_remote_user
-  echo ""
-  read -r -p "Tạo thêm 1 remote user nữa? (y/N): " ADD_USER_ANS
-done
