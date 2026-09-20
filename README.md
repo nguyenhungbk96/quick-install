@@ -5,9 +5,9 @@ qua WSL, máy sau router/CGNAT...) từ bất kỳ đâu trên Internet, thông 
 IP public làm trạm trung gian. Cũng dùng để expose bất kỳ port nào khác của máy đó
 (web app, database...) ra ngoài theo cùng cơ chế.
 
-- `vps_setup.sh` (v1.3.0) — chạy **trên VPS**, tạo 1 user "chỉ dùng để tunnel"
+- `vps_setup.sh` (v1.5.0) — chạy **trên VPS**, tạo 1 user "chỉ dùng để tunnel"
   (không có shell, không login được, chỉ forward đúng các port bạn chỉ định).
-- `local_setup.sh` (v1.9.0) — chạy **trên máy muốn được truy cập từ xa**, tự tạo
+- `local_setup.sh` (v1.10.0) — chạy **trên máy muốn được truy cập từ xa**, tự tạo
   key, tự cài các gói cần thiết, tự tạo service nền để tunnel luôn sống. Ngay đầu
   script còn hỏi tuỳ chọn tạo thêm **remote user** (full shell, key riêng, password
   tuỳ chọn) — dùng khi 1 máy cần cho nhiều người khác nhau remote vào bằng tài
@@ -241,10 +241,10 @@ Việc đăng ký key lên VPS không phải chỉ là dòng hướng dẫn suô
 **dừng lại chờ bạn xác nhận** đã làm xong bên VPS rồi mới tự test tiếp:
 
 1. Script in ra public key vừa sinh + hướng dẫn: sang VPS, chạy lại
-   `vps_setup.sh`, nhập đúng cùng user tunnel và **đúng cùng danh sách port
-   như lần trước** (vps_setup.sh ghi đè toàn bộ port list mỗi lần chạy — nhập
-   thiếu port cũ sẽ vô tình bịt mất port đó), dán public key đó vào khi được
-   hỏi (`vps_setup.sh` tự **APPEND**, không xoá key người khác đã có).
+   `vps_setup.sh`, nhập đúng cùng user tunnel (từ v1.4.0, port nhập vào sẽ được
+   **cộng dồn** với danh sách đã cấp trước đó — không cần nhớ/gõ lại port cũ),
+   dán public key đó vào khi được hỏi (`vps_setup.sh` tự **APPEND**, không xoá
+   key người khác đã có).
 2. Script **dừng lại** ở dòng "Đã dán public key ở trên vào vps_setup.sh trên
    VPS xong chưa? Nhấn Enter để tự kiểm tra..." — bạn làm xong bên VPS rồi mới
    quay lại đây nhấn Enter.
@@ -300,7 +300,10 @@ khi keypair lỡ sinh trên VPS thay vì trên máy client.
 
 Muốn đổi port map hoặc thêm port mới: chạy lại `local_setup.sh` (và
 `vps_setup.sh` nếu thêm `remote_port` mới) — cả 2 script đều **idempotent**,
-ghi đè cấu hình cũ hoàn toàn, không để lại rác.
+tự dọn/ghi đè phần cấu hình của chính nó (Host block trong `~/.ssh/config`,
+`authorized_keys`, sshd drop-in), không để lại rác. Riêng danh sách port trong
+`vps_setup.sh` (từ v1.4.0) và key trong `authorized_keys` (cả 2 script) là
+**cộng dồn** chứ không ghi đè — an toàn khi 1 user tunnel phục vụ nhiều máy.
 
 ---
 

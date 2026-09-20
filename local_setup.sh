@@ -13,7 +13,7 @@
 #   sudo ./local_setup.sh     # provisioning: root tạo sẵn user + key cho người khác
 # Script sẽ hỏi từng bước: tạo/chọn key, IP VPS, user tunnel, các port cần forward.
 #
-SCRIPT_VERSION="1.9.0"
+SCRIPT_VERSION="1.10.0"
 
 set -euo pipefail
 
@@ -641,12 +641,12 @@ report_remote_users() {
     echo "  [A] MANG PRIVATE KEY vừa sinh sang máy đó  (mặc định của script)"
     echo "      Hợp khi '$username' là NGƯỜI KHÁC, hoặc máy đó chưa có key SSH nào."
     echo "      Private key: $keypath"
-    echo "        # trên máy này:"
-    echo "        cat $keypath          # copy TOÀN BỘ, gồm cả dòng BEGIN/END"
-    echo "        # hoặc gửi qua kênh an toàn:"
-    echo "        scp $keypath <họ>@<máy_của_họ>:~/.ssh/"
+    echo "      ---- BEGIN nội dung private key (copy TOÀN BỘ, gồm cả dòng BEGIN/END) ----"
+    cat "$keypath"
+    echo "      ---- END nội dung private key ----"
     echo "        # trên MÁY ĐÓ: dán vào ~/.ssh/<tên_file> rồi:  chmod 600 ~/.ssh/<tên_file>"
     echo "        # rồi trỏ IdentityFile trong ~/.ssh/config tới file đó."
+    echo "        # (hoặc gửi qua kênh an toàn thay vì copy tay:  scp $keypath <họ>@<máy_của_họ>:~/.ssh/)"
     echo "      Sau khi máy đó đã nhận được key, XOÁ bản trên máy này — đừng để private"
     echo "      key tồn tại ở 2 nơi lâu dài:"
     echo "        shred -u $keypath 2>/dev/null || rm -f $keypath"
@@ -678,10 +678,9 @@ report_remote_users() {
   echo "  CÒN 1 VIỆC BẮT BUỘC: các key trên mới chỉ được MÁY NÀY chấp nhận (hop cuối)."
   echo "  Để các user đó tự nhảy qua VPS (hop đầu, ProxyJump vào '$TUNNEL_USER'), từng key"
   echo "  còn phải được ĐĂNG KÝ THÊM trên VPS. Sang VPS chạy lại vps_setup.sh, nhập ĐÚNG"
-  echo "  cùng user '$TUNNEL_USER' và ĐÚNG cùng danh sách port như lần trước (vps_setup.sh"
-  echo "  ghi đè toàn bộ port list mỗi lần chạy — nhập thiếu port cũ sẽ bịt mất port đó),"
-  echo "  rồi dán lần lượt các public key dưới đây (vps_setup.sh tự APPEND, không xoá key"
-  echo "  của người khác đã có sẵn):"
+  echo "  cùng user '$TUNNEL_USER' (từ v1.4.0, vps_setup.sh tự cộng dồn port với danh sách"
+  echo "  đã cấp trước đó — không cần nhớ/gõ lại port cũ), rồi dán lần lượt các public key"
+  echo "  dưới đây (vps_setup.sh tự APPEND, không xoá key của người khác đã có sẵn):"
   echo ""
   for i in "${!NEW_USERNAMES[@]}"; do
     echo "  # ${NEW_USERNAMES[$i]}"
@@ -758,7 +757,8 @@ report_forward_status() {
     echo "      service tunnel CŨ của máy này còn sót (xem cảnh báo unit trùng phía trên)." >&2
     echo "      Kiểm tra trên VPS:  sudo ss -tlnp | grep <remote_port>" >&2
     echo "   2) remote_port chưa nằm trong PermitListen của user tunnel trên VPS" >&2
-    echo "      -> chạy lại vps_setup.sh và khai ĐỦ danh sách port (cả port cũ)." >&2
+    echo "      -> chạy lại vps_setup.sh và khai thêm port này (từ v1.4.0 tự cộng dồn" >&2
+    echo "      với port cũ, không cần gõ lại danh sách port đã cấp trước đó)." >&2
     echo "########################################################################" >&2
     return 1
   fi

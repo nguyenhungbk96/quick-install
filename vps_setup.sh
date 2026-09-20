@@ -21,7 +21,7 @@
 #     restart để chứng minh cấu hình thực sự có hiệu lực (không chỉ giả định).
 #   - Không đụng vào /etc/ssh/sshd_config gốc -> an toàn, dễ gỡ (chỉ cần xoá 1 file).
 #
-SCRIPT_VERSION="1.3.0"
+SCRIPT_VERSION="1.5.0"
 
 set -euo pipefail
 
@@ -175,11 +175,39 @@ DROPIN_DIR="/etc/ssh/sshd_config.d"
 mkdir -p "$DROPIN_DIR"
 DROPIN_FILE="$DROPIN_DIR/00-tunnel-${USERNAME}.conf"
 
+# Cộng dồn với danh sách port đã có sẵn trong file cấu hình cũ (nếu có) — 1 user
+# tunnel-only thường phục vụ NHIỀU máy đích khác nhau, mỗi máy 1 remote_port
+# riêng (key thì đã append từ v1.2.0, nhưng port trước đây vẫn bị GHI ĐÈ hoàn
+# toàn mỗi lần chạy). Thêm port cho máy B mà quên gõ lại port máy A đang dùng sẽ
+# ÂM THẦM cắt mất tunnel của máy A — bug thật, giờ hợp nhất thay vì thay thế.
+EXISTING_PORTS=()
+if [[ -f "$DROPIN_FILE" ]]; then
+  while read -r tok; do
+    [[ "$tok" == 127.0.0.1:* ]] && EXISTING_PORTS+=("${tok#127.0.0.1:}")
+  done < <(grep -E '^[[:space:]]*PermitListen[[:space:]]' "$DROPIN_FILE" | sed -E 's/^[[:space:]]*PermitListen[[:space:]]+//' | tr ' ' '\n')
+fi
+
+KEPT_FROM_EXISTING=()
+for ep in "${EXISTING_PORTS[@]}"; do
+  already_listed=0
+  for p in "${TUNNEL_PORTS[@]}"; do
+    [[ "$p" == "$ep" ]] && { already_listed=1; break; }
+  done
+  if [[ $already_listed -eq 0 ]]; then
+    TUNNEL_PORTS+=("$ep")
+    KEPT_FROM_EXISTING+=("$ep")
+  fi
+done
+if [[ ${#KEPT_FROM_EXISTING[@]} -gt 0 ]]; then
+  echo "    Giữ nguyên port đã cấp cho máy khác trước đó (không đụng tới): ${KEPT_FROM_EXISTING[*]}"
+fi
+
 PERMIT_LISTEN=""
 for p in "${TUNNEL_PORTS[@]}"; do
   PERMIT_LISTEN="${PERMIT_LISTEN}127.0.0.1:${p} "
 done
 PERMIT_LISTEN="${PERMIT_LISTEN% }"
+echo "    PermitListen sẽ áp dụng (đã cộng dồn, nếu có): $PERMIT_LISTEN"
 
 if [[ -f "$DROPIN_FILE" ]]; then
   cp "$DROPIN_FILE" "${DROPIN_FILE}.bak.$(date +%Y%m%d%H%M%S)"
@@ -300,13 +328,13 @@ if [[ $VERIFY_OK -eq 1 ]]; then
   echo "  -> Chỉ cần verify: ssh -i <private_key> -p $CURRENT_SSH_PORT $USERNAME@<VPS_IP> true"
   echo ""
   if [[ -n "$PRIVATE_KEY_ON_VPS_HINT" ]]; then
-    echo "  [Phương án B] Phát hiện keypair được sinh NGAY TRÊN VPS này"
-    echo "  ($PRIVATE_KEY_ON_VPS_HINT) — cần TẢI private key đó về máy client qua kênh"
-    echo "  đã mã hoá (scp/sftp), rồi XOÁ khỏi VPS (không nên để private key tồn tại"
-    echo "  ở 2 nơi lâu dài). Chạy từ máy CLIENT (không phải trên VPS):"
-    echo "    scp $USER@<VPS_IP>:$PRIVATE_KEY_ON_VPS_HINT ~/.ssh/vps_tunnel"
-    echo "    chmod 600 ~/.ssh/vps_tunnel"
-    echo "  Sau khi đã tải và verify xong, xoá private key khỏi VPS:"
+    echo "  [Phương án B] Phát hiện keypair được sinh NGAY TRÊN VPS này ($PRIVATE_KEY_ON_VPS_HINT)."
+    echo "  Nội dung private key (copy TOÀN BỘ, gồm cả dòng BEGIN/END, dán sang máy client):"
+    echo "  ---- BEGIN nội dung private key ----"
+    cat "$PRIVATE_KEY_ON_VPS_HINT"
+    echo "  ---- END nội dung private key ----"
+    echo "  Trên máy CLIENT: dán vào ~/.ssh/vps_tunnel rồi:  chmod 600 ~/.ssh/vps_tunnel"
+    echo "  Sau khi đã dán và verify xong, XOÁ private key khỏi VPS (không để tồn tại ở 2 nơi):"
     echo "    shred -u $PRIVATE_KEY_ON_VPS_HINT 2>/dev/null || rm -f $PRIVATE_KEY_ON_VPS_HINT"
   else
     echo "  [Phương án B] Nếu keypair được sinh NGAY TRÊN VPS này (vd chạy ssh-keygen"
