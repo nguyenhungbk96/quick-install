@@ -7,7 +7,7 @@ IP public làm trạm trung gian. Cũng dùng để expose bất kỳ port nào 
 
 - `vps_setup.sh` (v1.6.0) — chạy **trên VPS**, tạo 1 user "chỉ dùng để tunnel"
   (không có shell, không login được, chỉ forward đúng các port bạn chỉ định).
-- `local_setup.sh` (v1.12.0) — chạy **trên máy muốn được truy cập từ xa**, tự tạo
+- `local_setup.sh` (v1.13.0) — chạy **trên máy muốn được truy cập từ xa**, tự tạo
   key, tự cài các gói cần thiết, tự tạo service nền để tunnel luôn sống. Ngay đầu
   script còn hỏi tuỳ chọn tạo thêm **remote user** (full shell, key riêng, password
   tuỳ chọn) — dùng khi 1 máy cần cho nhiều người khác nhau remote vào bằng tài

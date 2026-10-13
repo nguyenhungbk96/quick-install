@@ -13,7 +13,7 @@
 #   sudo ./local_setup.sh     # provisioning: root tạo sẵn user + key cho người khác
 # Script sẽ hỏi từng bước: tạo/chọn key, IP VPS, user tunnel, các port cần forward.
 #
-SCRIPT_VERSION="1.12.0"
+SCRIPT_VERSION="1.13.0"
 
 set -euo pipefail
 
@@ -1435,5 +1435,107 @@ if [[ ${#UNVERIFIED_PORTS[@]} -gt 0 ]]; then
   echo "########################################################################"
 fi
 
+# In 1 cặp Host (nhảy qua VPS + đích cuối là máy này) cho ~/.ssh/config trên laptop.
+# Tham số: <tên Host jump> <tên Host đích> <user trên máy này> <đường dẫn private key>
+print_ssh_config_pair() {
+  local jump="$1" dest="$2" duser="$3" ident="$4"
+  echo ""
+  echo "    Host $jump"
+  echo "        HostName $VPS_IP"
+  echo "        User $TUNNEL_USER"
+  echo "        IdentityFile $ident"
+  echo "        ServerAliveInterval 30"
+  echo "        ServerAliveCountMax 3"
+  echo "        TCPKeepAlive yes"
+  echo ""
+  echo "    Host $dest"
+  echo "        HostName localhost"
+  echo "        Port $remote_ssh_port"
+  echo "        User $duser"
+  echo "        ProxyJump $jump"
+  echo "        IdentityFile $ident"
+  echo "        ServerAliveInterval 30"
+  echo "        ServerAliveCountMax 3"
+  echo "        TCPKeepAlive yes"
+}
+
+# Tổng kết cuối cùng: gom MỘT chỗ mọi thông tin kết nối để người dùng lưu lại, khỏi
+# phải lội ngược log dài. Chỉ in khi mọi bước trước đó đã thành công (lỗi thì script
+# đã `exit 1` từ trước).
+print_final_summary() {
+  local svc="${SERVICE_NAME:-${PLIST_LABEL:-}}"
+  local can_login_self=0
+  [[ -n "$remote_ssh_port" && $AUTHORIZE_SELF -eq 1 ]] && can_login_self=1
+
+  echo ""
+  echo "########################################################################"
+  echo "##  TỔNG KẾT — thông tin kết nối (nên lưu lại)"
+  echo "########################################################################"
+  echo "  VPS                : $VPS_IP"
+  echo "  User tunnel (VPS)  : $TUNNEL_USER"
+  echo "  Port map           : ${PORT_MAPS[*]}   (remote_port:local_port)"
+  [[ -z "$svc" ]] || echo "  Service nền        : $svc"
+  if [[ $can_login_self -eq 1 ]]; then
+    echo "  SSH vào máy này    : qua VPS, port $remote_ssh_port, user $USER"
+  fi
+  echo ""
+  echo "  PUBLIC KEY  ($KEY_PATH.pub)"
+  echo "    Đã cài trên VPS cho user '$TUNNEL_USER'$( [[ $can_login_self -eq 1 ]] && echo " và trong ~/.ssh/authorized_keys của máy này" )."
+  echo "    $(cat "$KEY_PATH.pub")"
+  echo ""
+  echo "  PRIVATE KEY ($KEY_PATH)"
+  echo "    GIỮ BÍ MẬT. Máy này cần file này để chạy tunnel — KHÔNG xoá."
+
+  if [[ -z "$remote_ssh_port" ]]; then
+    echo ""
+    echo "  Port map không có local_port 22 nên chưa có đường SSH vào máy này qua tunnel."
+    echo "########################################################################"
+    return 0
+  fi
+
+  echo ""
+  echo "  ── Cấu hình ~/.ssh/config trên LAPTOP (thiết bị dùng để SSH từ xa) ──"
+  echo "  Mỗi tài khoản gồm 2 Host: '*jump' (nhảy qua VPS) + 'home*' (đích cuối là máy này)."
+
+  local listed=0 i uname ukey
+  if [[ $can_login_self -eq 1 ]]; then
+    listed=1
+    echo ""
+    echo "  [Tài khoản '$USER' — dùng key tunnel ở trên]"
+    echo "  Trên laptop: tạo ~/.ssh/vps_tunnel, dán khối private key này, rồi chmod 600:"
+    echo "  (private key cũng nằm lại trong scrollback của terminal — xoá nếu không muốn lưu)"
+    echo "  ---- BEGIN private key ----"
+    cat "$KEY_PATH"
+    echo "  ---- END private key ----"
+    echo ""
+    print_ssh_config_pair "vps-jump" "home" "$USER" "~/.ssh/vps_tunnel"
+    echo ""
+    echo "  Dùng:  ssh home"
+  fi
+
+  if [[ ${#NEW_USERNAMES[@]} -gt 0 ]]; then
+    for i in "${!NEW_USERNAMES[@]}"; do
+      uname="${NEW_USERNAMES[$i]}"
+      ukey="~/.ssh/${NEW_KEYPATHS[$i]##*/}"
+      listed=1
+      echo ""
+      echo "  [Remote user '$uname' — key riêng, private key ở mục BÀN GIAO phía trên]"
+      echo "  Lưu private key của '$uname' vào $ukey trên máy của họ (chmod 600)."
+      print_ssh_config_pair "vps-jump-$uname" "home-$uname" "$uname" "$ukey"
+      echo ""
+      echo "  Dùng:  ssh home-$uname"
+    done
+  fi
+
+  if [[ $listed -eq 0 ]]; then
+    echo ""
+    echo "  Chưa có tài khoản nào SSH vào máy này được (đã chọn không mở SSH vào root và"
+    echo "  không tạo remote user). Mẫu để điền khi có user + key:"
+    print_ssh_config_pair "vps-jump" "home" "<user_trên_máy_này>" "<private_key>"
+  fi
+  echo "########################################################################"
+}
+
 report_remote_users
+print_final_summary
 
