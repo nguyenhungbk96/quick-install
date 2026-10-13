@@ -13,7 +13,7 @@
 #   sudo ./local_setup.sh     # provisioning: root tạo sẵn user + key cho người khác
 # Script sẽ hỏi từng bước: tạo/chọn key, IP VPS, user tunnel, các port cần forward.
 #
-SCRIPT_VERSION="1.11.0"
+SCRIPT_VERSION="1.12.0"
 
 set -euo pipefail
 
@@ -139,10 +139,41 @@ fi
 echo ""
 echo "Nhập danh sách port muốn forward, dạng remote_port:local_port, cách nhau bởi dấu cách."
 echo "  remote_port : port sẽ mở trên VPS (chỉ bind localhost VPS, dùng qua SSH jump)"
-echo "  local_port  : port tương ứng trên máy bạn"
-ask "Port map [2222:22 3000:3000]: " "2222:22 3000:3000"; PORT_MAPS_RAW="$ASK_REPLY"
-PORT_MAPS_RAW="${PORT_MAPS_RAW:-2222:22 3000:3000}"
-read -r -a PORT_MAPS <<< "$PORT_MAPS_RAW"
+echo "  local_port  : port tương ứng trên máy bạn (22 = SSH vào chính máy này)"
+echo ""
+echo "  QUY TẮC: remote_port phải RIÊNG cho từng máy (không trùng máy khác đang dùng chung"
+echo "  VPS/user tunnel) và phải nằm trong danh sách đã khai khi chạy vps_setup.sh."
+echo ""
+echo "  Ví dụ:"
+echo "    2201:22              -> SSH vào máy này qua port 2201 trên VPS"
+echo "    2201:22 8080:3000    -> SSH (2201) + web app chạy ở port 3000 của máy này (mở ra 8080)"
+echo "    2202:22              -> máy thứ hai dùng chung VPS: đổi sang 2202, KHÔNG dùng lại 2201"
+echo ""
+PORT_MAPS=()
+for _attempt in 1 2 3; do
+  ask "Port map (vd: 2201:22): "; PORT_MAPS_RAW="$ASK_REPLY"
+  PORT_MAPS=()
+  read -r -a PORT_MAPS <<< "$PORT_MAPS_RAW"
+  PORT_MAPS_OK=1
+  if [[ ${#PORT_MAPS[@]} -eq 0 ]]; then
+    PORT_MAPS_OK=0
+    echo "  Chưa nhập port map nào. Cần ít nhất 1 cặp, vd: 2201:22" >&2
+  else
+    for pm in "${PORT_MAPS[@]}"; do
+      if ! [[ "$pm" =~ ^[0-9]+:[0-9]+$ ]] \
+         || (( 10#${pm%%:*} < 1 || 10#${pm%%:*} > 65535 || 10#${pm#*:} < 1 || 10#${pm#*:} > 65535 )); then
+        PORT_MAPS_OK=0
+        echo "  '$pm' không hợp lệ — phải có dạng remote_port:local_port (số 1-65535), vd 2201:22" >&2
+      fi
+    done
+  fi
+  [[ $PORT_MAPS_OK -eq 1 ]] && break
+  PORT_MAPS=()
+done
+if [[ ${#PORT_MAPS[@]} -eq 0 ]]; then
+  echo "Lỗi: không có port map hợp lệ sau 3 lần nhập. Chạy lại script và nhập theo ví dụ ở trên." >&2
+  exit 1
+fi
 
 # Port SSH THẬT của chính máy này, dùng xuyên suốt script thay cho số 22 cứng.
 # Mặc định 22, nhưng KHÔNG phải lúc nào cũng vậy: trên 1 máy Windows chạy NHIỀU

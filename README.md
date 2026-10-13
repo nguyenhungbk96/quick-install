@@ -98,7 +98,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/nguyenhungbk96/quick-ins
 | Service nền | LaunchAgent (macOS) / `systemd --user` (Linux), gắn với phiên đăng nhập | LaunchDaemon / systemd system unit, chạy từ lúc boot |
 | Máy headless/server | Cần bật `linger` | **Nên chọn**: tunnel sống kể cả khi không ai đăng nhập |
 
-**Hỏi gì trong lúc chạy:** tên user tunnel (mặc định `tunneluser`), public key, danh sách port cho phép forward (mặc định `2222 3000`), IP VPS, port cần map. Tất cả đều có giá trị mặc định, nhấn Enter để chấp nhận.
+**Hỏi gì trong lúc chạy:** tên user tunnel (mặc định `tunneluser`), public key, danh sách port cho phép forward, IP VPS, port cần map. Riêng **port không có mặc định** (bắt buộc nhập, script in sẵn ví dụ) vì mỗi máy dùng chung VPS phải có `remote_port` riêng, mặc định chung sẽ khiến các máy đụng port nhau.
 
 **Kết quả:** script chỉ báo `✔ HOÀN TẤT` khi đã kiểm chứng cấu hình thực sự có hiệu lực, nếu không sẽ báo `✘ CẢNH BÁO` kèm hướng dẫn gỡ lỗi. Cả 2 script đều **idempotent**, chạy lại để đổi port hoặc thêm port mới là an toàn.
 

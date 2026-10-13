@@ -5,9 +5,9 @@ qua WSL, máy sau router/CGNAT...) từ bất kỳ đâu trên Internet, thông 
 IP public làm trạm trung gian. Cũng dùng để expose bất kỳ port nào khác của máy đó
 (web app, database...) ra ngoài theo cùng cơ chế.
 
-- `vps_setup.sh` (v1.5.0) — chạy **trên VPS**, tạo 1 user "chỉ dùng để tunnel"
+- `vps_setup.sh` (v1.6.0) — chạy **trên VPS**, tạo 1 user "chỉ dùng để tunnel"
   (không có shell, không login được, chỉ forward đúng các port bạn chỉ định).
-- `local_setup.sh` (v1.11.0) — chạy **trên máy muốn được truy cập từ xa**, tự tạo
+- `local_setup.sh` (v1.12.0) — chạy **trên máy muốn được truy cập từ xa**, tự tạo
   key, tự cài các gói cần thiết, tự tạo service nền để tunnel luôn sống. Ngay đầu
   script còn hỏi tuỳ chọn tạo thêm **remote user** (full shell, key riêng, password
   tuỳ chọn) — dùng khi 1 máy cần cho nhiều người khác nhau remote vào bằng tài
@@ -80,9 +80,18 @@ Script sẽ hỏi:
    có shell, không login được, chỉ dùng để nhận reverse tunnel.
 2. **Public key** — dán nội dung hoặc đường dẫn file `.pub`. Nếu chưa có key, quay
    lại sau khi chạy `local_setup.sh` (Bước 2) vì nó sẽ tạo key và in ra cho bạn.
-3. **Danh sách port** muốn cho phép forward (mặc định `2222 3000`) — đây là các
-   port sẽ mở **trên VPS**, chỉ bind `127.0.0.1` (không lộ ra Internet), dùng làm
-   "cửa vào" khi SSH qua VPS.
+3. **Danh sách port** muốn cho phép forward — **không có mặc định, bắt buộc nhập**
+   (script in sẵn ví dụ ngay trên màn hình). Đây là các port sẽ mở **trên VPS**,
+   chỉ bind `127.0.0.1` (không lộ ra Internet), dùng làm "cửa vào" khi SSH qua VPS.
+   **Mỗi máy phải dùng remote_port riêng**, không trùng máy khác:
+   ```
+   2222              -> 1 máy, chỉ SSH
+   2222 8080         -> 1 máy, SSH + 1 web app
+   2201 2202 2203    -> 3 máy, mỗi máy 1 port SSH riêng
+   ```
+   Thêm máy mới sau này: chạy lại, nhập **cùng user** và **chỉ port mới** — port
+   cũ được giữ nguyên. Nếu user đã có port từ trước, có thể để trống (Enter) khi
+   chỉ muốn thêm key.
 
 Script tự làm và **tự kiểm chứng lại bằng `sshd -T -C`** (đọc cấu hình sshd *thực
 sự áp dụng* cho user đó, không chỉ đoán):
@@ -132,10 +141,17 @@ Script hỏi:
    nếu chưa làm.
 2. Chờ bạn xác nhận đã setup xong VPS.
 3. **IP/domain VPS** và **tên user tunnel** (khớp với Bước 1).
-4. **Port map**, dạng `remote_port:local_port` (mặc định `2222:22 3000:3000`):
-   - `remote_port`: port trên VPS (khớp danh sách đã khai ở Bước 1).
+4. **Port map**, dạng `remote_port:local_port` — **không có mặc định, bắt buộc
+   nhập** (script in sẵn ví dụ, nhập sai định dạng được hỏi lại tối đa 3 lần):
+   - `remote_port`: port trên VPS (khớp danh sách đã khai ở Bước 1, và **không
+     trùng** máy khác dùng chung VPS/user tunnel).
    - `local_port`: port tương ứng trên chính máy đích (`22` = SSH vào máy này,
      port khác = ứng dụng riêng của bạn, ví dụ web app).
+   ```
+   2201:22              -> SSH vào máy này qua port 2201 trên VPS
+   2201:22 8080:3000    -> SSH (2201) + web app ở port 3000 (mở ra 8080 trên VPS)
+   2202:22              -> máy thứ hai dùng chung VPS: dùng 2202, không dùng lại 2201
+   ```
 5. **Remote user** (tuỳ chọn) — có cần tạo thêm tài khoản riêng trên máy này cho
    người khác SSH vào không (tên user / password / đường dẫn key). Xem Bước 4.
 

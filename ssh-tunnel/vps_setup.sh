@@ -21,7 +21,7 @@
 #     restart để chứng minh cấu hình thực sự có hiệu lực (không chỉ giả định).
 #   - Không đụng vào /etc/ssh/sshd_config gốc -> an toàn, dễ gỡ (chỉ cần xoá 1 file).
 #
-SCRIPT_VERSION="1.5.0"
+SCRIPT_VERSION="1.6.0"
 
 set -euo pipefail
 
@@ -130,12 +130,44 @@ fi
 
 echo "Nhập danh sách port trên VPS sẽ dùng để nhận reverse tunnel (remote_port trong port map"
 echo "của local_setup.sh), cách nhau bởi dấu cách. Chỉ các port này mới được phép forward."
-read -r -p "Danh sách port [2222 3000]: " PORTS_RAW
-PORTS_RAW="${PORTS_RAW:-2222 3000}"
+echo ""
+echo "  QUY TẮC: mỗi MÁY phải dùng remote_port RIÊNG, không được trùng máy khác (trùng thì"
+echo "  máy kết nối sau sẽ không mở được port). Chọn port > 1024, chưa có dịch vụ nào dùng."
+echo ""
+echo "  Ví dụ:"
+echo "    2222              -> 1 máy, chỉ SSH vào máy đó"
+echo "    2222 8080         -> 1 máy, SSH (2222) + 1 web app (8080)"
+echo "    2201 2202 2203    -> 3 máy, mỗi máy 1 port SSH riêng (máy A=2201, B=2202, C=2203)"
+echo ""
+echo "  Thêm máy mới sau này: chạy lại script, nhập CÙNG tên user và CHỈ port mới (vd 2204)."
+echo "  Port đã cấp cho các máy trước được giữ nguyên, không cần gõ lại."
+echo ""
+
+# Cho phép để trống CHỈ khi user này đã có danh sách port từ lần chạy trước (trường
+# hợp chỉ muốn thêm key của máy/người khác, không thêm port mới). Lần đầu thì bắt buộc nhập.
+EXISTING_DROPIN="/etc/ssh/sshd_config.d/00-tunnel-${USERNAME}.conf"
+HAS_EXISTING_PORTS=0
+if [[ -f "$EXISTING_DROPIN" ]] && grep -qE '^[[:space:]]*PermitListen[[:space:]]' "$EXISTING_DROPIN"; then
+  HAS_EXISTING_PORTS=1
+fi
+
+PORTS_RAW=""
+if [[ $HAS_EXISTING_PORTS -eq 1 ]]; then
+  echo "  (User '$USERNAME' đã có port từ trước — có thể để trống nếu chỉ thêm key, không thêm port.)"
+  read -r -p "Danh sách port [Enter = giữ nguyên port cũ]: " PORTS_RAW || true
+else
+  read -r -p "Danh sách port (vd: 2222 8080): " PORTS_RAW || true
+  if [[ -z "${PORTS_RAW// /}" ]]; then
+    echo "Lỗi: chưa nhập port nào. Cần ít nhất 1 port, vd: 2222" >&2
+    exit 1
+  fi
+fi
+
+TUNNEL_PORTS=()
 read -r -a TUNNEL_PORTS <<< "$PORTS_RAW"
-for p in "${TUNNEL_PORTS[@]}"; do
-  if ! [[ "$p" =~ ^[0-9]+$ ]] || (( p < 1 || p > 65535 )); then
-    echo "Lỗi: port '$p' không hợp lệ." >&2
+for p in ${TUNNEL_PORTS[@]+"${TUNNEL_PORTS[@]}"}; do
+  if ! [[ "$p" =~ ^[0-9]+$ ]] || (( 10#$p < 1 || 10#$p > 65535 )); then
+    echo "Lỗi: port '$p' không hợp lệ (phải là số từ 1 đến 65535)." >&2
     exit 1
   fi
 done
