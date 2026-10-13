@@ -82,38 +82,15 @@ echo "=== Setup user tunnel trên VPS (vps_setup.sh v$SCRIPT_VERSION) ==="
 echo ""
 cat <<'GUIDE'
 ########################################################################
-##  LỘ TRÌNH TỔNG THỂ — 4 bước, chạy ở 3 nơi khác nhau
+##  LỘ TRÌNH: LOCAL (tạo key) -> VPS (script này) -> LOCAL (mở tunnel)
 ########################################################################
-
-  [Máy LOCAL: nhà/sau NAT] --tunnel--> [VPS] <--ssh-- [LAPTOP của bạn]
-
-  BƯỚC 1 — trên máy LOCAL (máy muốn được truy cập từ xa)
-           Chạy local_setup.sh. Nó tạo 1 cặp key và IN RA PUBLIC KEY
-           (dòng ssh-ed25519 ...). Copy dòng này, rồi DỪNG ở câu
-           "Đã setup user tunnel trên VPS chưa?" — để cửa sổ đó mở.
-
-  BƯỚC 2 — trên VPS   <<< BẠN ĐANG Ở ĐÂY (vps_setup.sh)
-           Dán public key ở bước 1, chọn tên user tunnel và remote_port.
-           Script tạo user "chỉ để tunnel" (không shell, không login) và
-           chỉ cho phép nó mở đúng các port bạn khai.
-           Cuối script báo '✔ HOÀN TẤT'. Nhớ: tên user + remote_port.
-
-  BƯỚC 3 — quay lại máy LOCAL (cửa sổ đang dừng ở bước 1)
-           Nhấn Enter, nhập IP VPS, tên user và Port map (dạng
-           remote_port:local_port, vd 2201:22). Script cài autossh, tạo
-           service chạy nền tự nối lại -> tunnel mở, máy LOCAL đã "gọi" ra VPS.
-
-  BƯỚC 4 — trên LAPTOP của bạn (thiết bị dùng để SSH từ xa)
-           Chép private key + đoạn ~/.ssh/config mà local_setup.sh in ra,
-           rồi gõ:  ssh home   (đi qua VPS vào máy LOCAL).
-
-  THÊM MÁY THỨ 2 vào cùng VPS: lặp bước 1-3 với key mới + remote_port MỚI
-  (không trùng máy đầu). Ở bước 2 gõ CÙNG tên user, CHỈ nhập port mới.
-
+  1. LOCAL: chạy local_setup.sh -> nó in PUBLIC KEY. Copy lại, để cửa sổ mở.
+  2. VPS  : <<< BẠN ĐANG Ở ĐÂY. Dán public key, chọn tên user + remote_port.
+            Cuối script in sẵn IP VPS / user / port map để nhập vào LOCAL.
+  3. LOCAL: quay lại cửa sổ ở bước 1, nhập đúng các thông tin đó.
+  Thêm máy khác: lặp 1-3 với key mới + remote_port mới, CÙNG tên user.
 ########################################################################
 GUIDE
-echo ""
-read -r -p "Đã hiểu lộ trình? Nhấn Enter để bắt đầu BƯỚC 2 (Ctrl+C để thoát)... " _ || true
 echo ""
 
 echo "==> [1/8] Kiểm tra sshd đã cài chưa (thường đã có sẵn vì bạn đang SSH vào máy này)"
@@ -121,7 +98,7 @@ ensure_pkg "openssh-server (sshd)" "command -v sshd || [[ -x /usr/sbin/sshd ]]" 
   || install_pkg openssh
 echo ""
 
-echo "Ví dụ tên user: tunneluser  hoặc  jump  (nhiều máy dùng chung VPS thì gõ cùng 1 tên)"
+echo "Tên user tunnel (nhiều máy dùng chung VPS thì gõ cùng 1 tên, vd: jump)"
 read -r -p "Tên user tunnel [tunneluser]: " USERNAME
 USERNAME="${USERNAME:-tunneluser}"
 if ! [[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
@@ -130,9 +107,7 @@ if ! [[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
 fi
 
 echo ""
-echo "Dán 1 dòng public key (vd: ssh-ed25519 AAAAC3Nza...xyz vps-tunnel-20261013)"
-echo "hoặc đường dẫn file .pub trên VPS (vd: /root/vps_tunnel.pub)"
-echo "(Chưa có key? Ctrl+C, chạy local_setup.sh trên máy LOCAL trước — bước 1.)"
+echo "Public key do local_setup.sh in ra (dán 1 dòng ssh-ed25519 ..., hoặc đường dẫn file .pub)"
 read -r -p "Public key (đường dẫn hoặc nội dung): " PUBKEY_INPUT
 echo ""
 
@@ -164,20 +139,8 @@ if ! [[ "$PUBKEY_CONTENT" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-) ]]; then
   exit 1
 fi
 
-echo "Nhập danh sách port trên VPS sẽ dùng để nhận reverse tunnel (remote_port trong port map"
-echo "của local_setup.sh), cách nhau bởi dấu cách. Chỉ các port này mới được phép forward."
-echo ""
-echo "  QUY TẮC: mỗi MÁY phải dùng remote_port RIÊNG, không được trùng máy khác (trùng thì"
-echo "  máy kết nối sau sẽ không mở được port). Chọn port > 1024, chưa có dịch vụ nào dùng."
-echo ""
-echo "  Ví dụ:"
-echo "    2222              -> 1 máy, chỉ SSH vào máy đó"
-echo "    2222 8080         -> 1 máy, SSH (2222) + 1 web app (8080)"
-echo "    2201 2202 2203    -> 3 máy, mỗi máy 1 port SSH riêng (máy A=2201, B=2202, C=2203)"
-echo ""
-echo "  Thêm máy mới sau này: chạy lại script, nhập CÙNG tên user và CHỈ port mới (vd 2204)."
-echo "  Port đã cấp cho các máy trước được giữ nguyên, không cần gõ lại."
-echo ""
+echo "remote_port = port mở trên VPS cho máy này (cách nhau bởi dấu cách). Mỗi máy 1 port RIÊNG."
+echo "  Ví dụ: 2201  |  2201 8080 (SSH + 1 web app)  |  máy thứ 2 chỉ nhập port mới: 2202"
 
 # Cho phép để trống CHỈ khi user này đã có danh sách port từ lần chạy trước (trường
 # hợp chỉ muốn thêm key của máy/người khác, không thêm port mới). Lần đầu thì bắt buộc nhập.
@@ -207,6 +170,8 @@ for p in ${TUNNEL_PORTS[@]+"${TUNNEL_PORTS[@]}"}; do
     exit 1
   fi
 done
+# Port nhập ở LẦN CHẠY NÀY (trước khi cộng dồn với port cũ) — dùng để in gợi ý port map.
+NEW_PORTS=(${TUNNEL_PORTS[@]+"${TUNNEL_PORTS[@]}"})
 echo ""
 
 echo "==> [2/8] Tạo user '$USERNAME' (không có shell, chỉ dùng để tunnel)"
@@ -379,45 +344,55 @@ CURRENT_SSH_PORT="${CURRENT_SSH_PORT:-22}"
 echo ""
 if [[ $VERIFY_OK -eq 1 ]]; then
   echo "✔ HOÀN TẤT — cấu hình đã được xác nhận có hiệu lực thật sự (không chỉ giả định)."
-  echo "  - User '$USERNAME' chỉ dùng được để tunnel (không login shell được)."
-  echo "  - Port được phép forward: $PERMIT_LISTEN"
-  echo "  - Test nhanh từ máy local: ssh -i <private_key> -p $CURRENT_SSH_PORT $USERNAME@<VPS_IP> true"
-  echo "    (auth OK thì lệnh trả về ngay với exit code khác 0, KHÔNG bị treo — do tài khoản không có shell)"
+  echo "  User '$USERNAME' chỉ dùng để tunnel (không login shell được). Port được phép: $PERMIT_LISTEN"
   echo ""
-  echo "------------------------------------------------------------------------"
-  echo "Máy CLIENT (máy sẽ dùng để chạy tunnel/ProxyJump) cần có đúng PRIVATE KEY"
-  echo "khớp với public key vừa cài. Tuỳ bạn đã tạo keypair ở đâu, chọn 1 trong 2:"
-  echo "------------------------------------------------------------------------"
-  echo ""
-  echo "  [Phương án A — khuyến nghị] Keypair đã sinh SẴN TRÊN MÁY CLIENT"
-  echo "  (vd bằng local_setup.sh, hoặc tự ssh-keygen), rồi bạn dán public key lên"
-  echo "  đây. Private key vốn đã nằm đúng chỗ, KHÔNG cần làm gì thêm — private"
-  echo "  key không bao giờ nên rời khỏi máy đã sinh ra nó."
-  echo "  -> Chỉ cần verify: ssh -i <private_key> -p $CURRENT_SSH_PORT $USERNAME@<VPS_IP> true"
-  echo ""
-  if [[ -n "$PRIVATE_KEY_ON_VPS_HINT" ]]; then
-    echo "  [Phương án B] Phát hiện keypair được sinh NGAY TRÊN VPS này ($PRIVATE_KEY_ON_VPS_HINT)."
-    echo "  Nội dung private key (copy TOÀN BỘ, gồm cả dòng BEGIN/END, dán sang máy client):"
-    echo "  ---- BEGIN nội dung private key ----"
-    cat "$PRIVATE_KEY_ON_VPS_HINT"
-    echo "  ---- END nội dung private key ----"
-    echo "  Trên máy CLIENT: dán vào ~/.ssh/vps_tunnel rồi:  chmod 600 ~/.ssh/vps_tunnel"
-    echo "  Sau khi đã dán và verify xong, XOÁ private key khỏi VPS (không để tồn tại ở 2 nơi):"
-    echo "    shred -u $PRIVATE_KEY_ON_VPS_HINT 2>/dev/null || rm -f $PRIVATE_KEY_ON_VPS_HINT"
-  else
-    echo "  [Phương án B] Nếu keypair được sinh NGAY TRÊN VPS này (vd chạy ssh-keygen"
-    echo "  trực tiếp tại đây thay vì trên client) — cần TẢI private key đó về máy"
-    echo "  client qua kênh đã mã hoá (scp/sftp), rồi XOÁ khỏi VPS (không nên để"
-    echo "  private key tồn tại ở 2 nơi lâu dài). Chạy từ máy CLIENT:"
-    echo "    scp $USER@<VPS_IP>:<đường_dẫn_private_key_trên_VPS> ~/.ssh/vps_tunnel"
-    echo "    chmod 600 ~/.ssh/vps_tunnel"
-    echo "  Sau khi đã tải và verify xong, xoá private key khỏi VPS:"
-    echo "    shred -u <đường_dẫn_private_key_trên_VPS> 2>/dev/null || rm -f <đường_dẫn_private_key_trên_VPS>"
+
+  # IP public của VPS để đưa sang máy LOCAL. Hỏi dịch vụ ngoài (có timeout); lỗi thì
+  # lấy IP đầu tiên của máy, lỗi nữa thì để placeholder — không để script chết ở đây.
+  VPS_PUBLIC_IP="$(curl -4 -fsS --max-time 4 https://api.ipify.org 2>/dev/null || true)"
+  if ! [[ "$VPS_PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    VPS_PUBLIC_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
   fi
-  echo "------------------------------------------------------------------------"
+  VPS_PUBLIC_IP="${VPS_PUBLIC_IP:-<IP_VPS>}"
+
+  # Gợi ý port map: port đầu tiên mới nhập cho SSH vào máy LOCAL (local_port 22),
+  # các port sau là ứng dụng khác (thay local_port cho đúng).
+  SUGGEST_MAP=""
+  FIRST_NEW=1
+  for p in ${NEW_PORTS[@]+"${NEW_PORTS[@]}"}; do
+    if [[ $FIRST_NEW -eq 1 ]]; then
+      SUGGEST_MAP="${p}:22"; FIRST_NEW=0
+    else
+      SUGGEST_MAP="${SUGGEST_MAP} ${p}:<local_port>"
+    fi
+  done
+  SUGGEST_MAP="${SUGGEST_MAP:-<remote_port>:22}"
+
+  echo "########################################################################"
+  echo "##  NHẬP CÁC THÔNG TIN SAU VÀO local_setup.sh (bước 3 trên máy LOCAL)"
+  echo "########################################################################"
+  echo "    IP hoặc domain của VPS : $VPS_PUBLIC_IP"
+  echo "    Tên user tunnel        : $USERNAME"
+  echo "    Port map               : $SUGGEST_MAP"
+  echo "                             (dạng remote_port:local_port; 22 = SSH vào máy LOCAL)"
+  if [[ "$CURRENT_SSH_PORT" != "22" ]]; then
+    echo "    CHÚ Ý: sshd VPS đang nghe port $CURRENT_SSH_PORT (không phải 22). local_setup.sh"
+    echo "           gọi ssh tới VPS bằng port mặc định 22, nên cần mở/đổi port cho khớp."
+  fi
+  echo "########################################################################"
+  echo ""
+  echo "  Kiểm tra nhanh từ máy LOCAL (đúng khi lệnh trả về ngay, không treo):"
+  echo "    ssh -i <private_key> -p $CURRENT_SSH_PORT $USERNAME@$VPS_PUBLIC_IP true"
+  if [[ -n "$PRIVATE_KEY_ON_VPS_HINT" ]]; then
+    echo ""
+    echo "  LƯU Ý: keypair này được sinh NGAY TRÊN VPS ($PRIVATE_KEY_ON_VPS_HINT). Chuyển private key"
+    echo "  sang máy LOCAL qua scp rồi xoá khỏi VPS (không để tồn tại ở 2 nơi):"
+    echo "    scp <user>@$VPS_PUBLIC_IP:$PRIVATE_KEY_ON_VPS_HINT ~/.ssh/vps_tunnel && chmod 600 ~/.ssh/vps_tunnel"
+    echo "    shred -u $PRIVATE_KEY_ON_VPS_HINT 2>/dev/null || rm -f $PRIVATE_KEY_ON_VPS_HINT"
+  fi
 else
   echo "✘ CẢNH BÁO — cấu hình KHÔNG có hiệu lực như mong đợi, khả năng cao do 1 file khác" >&2
-  echo "  trong /etc/ssh/sshd_config.d/ đang đè lên (xem cảnh báo xung đột ở bước 4/7 nếu có)." >&2
+  echo "  trong /etc/ssh/sshd_config.d/ đang đè lên (xem cảnh báo xung đột ở bước 5/8 nếu có)." >&2
   echo "  Kiểm tra thủ công: sudo sshd -T -C user=$USERNAME,host=127.0.0.1,addr=127.0.0.1,laddr=127.0.0.1,lport=22 | grep -iE 'allowtcpforwarding|permitlisten'" >&2
   exit 1
 fi
