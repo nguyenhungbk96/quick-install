@@ -13,7 +13,7 @@
 #   sudo ./local_setup.sh     # provisioning: root tạo sẵn user + key cho người khác
 # Script sẽ hỏi từng bước: tạo/chọn key, IP VPS, user tunnel, các port cần forward.
 #
-SCRIPT_VERSION="1.10.0"
+SCRIPT_VERSION="1.11.0"
 
 set -euo pipefail
 
@@ -716,6 +716,9 @@ report_remote_users() {
   echo "        HostName $VPS_IP"
   echo "        User $TUNNEL_USER"
   echo "        IdentityFile <private_key>"
+  echo "        ServerAliveInterval 30"
+  echo "        ServerAliveCountMax 3"
+  echo "        TCPKeepAlive yes"
   for i in "${!NEW_USERNAMES[@]}"; do
     username="${NEW_USERNAMES[$i]}"
     echo ""
@@ -725,6 +728,9 @@ report_remote_users() {
     echo "        User $username"
     echo "        ProxyJump vps-jump"
     echo "        IdentityFile <private_key>"
+    echo "        ServerAliveInterval 30"
+    echo "        ServerAliveCountMax 3"
+    echo "        TCPKeepAlive yes"
   done
   echo ""
   echo "  Rồi họ dùng: ssh home-<tên_user>"
@@ -1027,6 +1033,9 @@ fi
   echo "    HostName $VPS_IP"
   echo "    User $TUNNEL_USER"
   echo "    IdentityFile $KEY_PATH"
+  echo "    ServerAliveInterval 30"
+  echo "    ServerAliveCountMax 3"
+  echo "    TCPKeepAlive yes"
   if [[ -n "$remote_ssh_port" && $AUTHORIZE_SELF -eq 1 ]]; then
     echo ""
     echo "Host home"
@@ -1035,6 +1044,9 @@ fi
     echo "    User $USER"
     echo "    ProxyJump vps-jump"
     echo "    IdentityFile $KEY_PATH"
+    echo "    ServerAliveInterval 30"
+    echo "    ServerAliveCountMax 3"
+    echo "    TCPKeepAlive yes"
   fi
   echo "$MARKER_END"
 } >> "$SSH_CONFIG"
