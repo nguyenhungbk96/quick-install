@@ -1471,15 +1471,10 @@ print_ssh_config_pair() {
 print_key_transfer() {
   local src="$1" dest="$2" b64
   b64="$(base64 < "$src" | tr -d '\n')"
-  echo "    Cách A (khuyến nghị) — dán đúng 1 DÒNG lệnh này vào terminal của máy client:"
   echo ""
   echo "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '$b64' | (base64 -d 2>/dev/null || base64 -D) > $dest && chmod 600 $dest && ssh-keygen -y -f $dest"
   echo ""
-  echo "    Dòng cuối phải in ra 1 dòng 'ssh-ed25519 AAAA...'. Nếu báo 'invalid format' nghĩa là"
-  echo "    chưa chép đủ 1 dòng lệnh trên (dòng rất dài, kiểm tra không bị cắt giữa chừng)."
-  echo ""
-  echo "    Cách B — nếu máy client cùng mạng LAN và đăng nhập được máy này bằng password:"
-  echo "      scp $USER@<IP_LAN_của_máy_này>:$src $dest && chmod 600 $dest"
+  echo "      (dán nguyên 1 dòng; cuối cùng phải hiện 'ssh-ed25519 AAAA...')"
 }
 
 # Tổng kết cuối cùng: gom MỘT chỗ mọi thông tin kết nối để người dùng lưu lại, khỏi
@@ -1492,22 +1487,13 @@ print_final_summary() {
 
   echo ""
   echo "########################################################################"
-  echo "##  TỔNG KẾT — thông tin kết nối (nên lưu lại)"
+  echo "##  TỔNG KẾT"
   echo "########################################################################"
-  echo "  VPS                : $VPS_IP"
-  echo "  User tunnel (VPS)  : $TUNNEL_USER"
-  echo "  Port map           : ${PORT_MAPS[*]}   (remote_port:local_port)"
-  [[ -z "$svc" ]] || echo "  Service nền        : $svc"
-  if [[ $can_login_self -eq 1 ]]; then
-    echo "  SSH vào máy này    : qua VPS, port $remote_ssh_port, user $USER"
-  fi
-  echo ""
-  echo "  PUBLIC KEY  ($KEY_PATH.pub)"
-  echo "    Đã cài trên VPS cho user '$TUNNEL_USER'$( [[ $can_login_self -eq 1 ]] && echo " và trong ~/.ssh/authorized_keys của máy này" )."
-  echo "    $(cat "$KEY_PATH.pub")"
-  echo ""
-  echo "  PRIVATE KEY ($KEY_PATH)"
-  echo "    GIỮ BÍ MẬT. Máy này cần file này để chạy tunnel — KHÔNG xoá."
+  echo "  VPS         : $VPS_IP   (user tunnel: $TUNNEL_USER)"
+  echo "  Port map    : ${PORT_MAPS[*]}   (remote_port:local_port)"
+  [[ -z "$svc" ]] || echo "  Service nền : $svc"
+  echo "  Private key : $KEY_PATH   (giữ bí mật, KHÔNG xoá — tunnel cần file này)"
+  echo "  Public key  : $(cat "$KEY_PATH.pub")"
 
   if [[ -z "$remote_ssh_port" ]]; then
     echo ""
@@ -1517,10 +1503,13 @@ print_final_summary() {
   fi
 
   echo ""
-  echo "  ══════════ HƯỚNG DẪN KẾT NỐI TỪ MÁY CLIENT (laptop, máy khác) ══════════"
-  echo "  Đường đi:  [máy client] --hop 1--> [VPS $VPS_IP, user $TUNNEL_USER] --hop 2--> [máy này]"
-  echo "  Cả 2 hop dùng CHUNG 1 private key; public key của nó đã được cài sẵn ở VPS và ở máy"
-  echo "  này, nên máy client KHÔNG phải add public key — chỉ cần có đúng file private key."
+  echo "  ── KẾT NỐI TỪ MÁY KHÁC ─────────────────────────────────────────────"
+  echo "  Có 3 máy, đừng nhầm:"
+  echo "    MÁY NÀY   = máy đang chạy script (máy đích, sau NAT)  -> ĐÃ XONG, không làm gì thêm"
+  echo "    VPS       = $VPS_IP                                   -> ĐÃ XONG, không làm gì thêm"
+  echo "    MÁY CLIENT = máy bạn sẽ ngồi gõ ssh (laptop, máy khác) -> làm 3 bước dưới đây"
+  echo "  Cả 2 hop dùng chung 1 private key; public key đã cài sẵn ở VPS và máy này."
+  echo "  => Máy client chỉ cần có file private key, KHÔNG phải add public key."
 
   local listed=0 i uname ukey kfile kdest kuser
   if [[ $can_login_self -eq 1 ]]; then
@@ -1533,78 +1522,51 @@ print_final_summary() {
 
   if [[ $listed -eq 1 ]]; then
     echo ""
-    echo "  ── BƯỚC 1/4: Đưa private key sang máy client ──"
-    echo "    (Key nằm ở máy này: $kfile. KHÔNG copy-paste khối nhiều dòng — dễ làm hỏng định dạng.)"
+    echo "  [1] Trên MÁY CLIENT — chép private key (mở terminal máy client, dán):"
     print_key_transfer "$kfile" "$kdest"
-
     echo ""
-    echo "  ── BƯỚC 2/4: Thêm vào ~/.ssh/config của máy client ──"
-    echo "    Dán lệnh sau vào terminal của máy client (nối thêm vào cuối file, không ghi đè):"
+    echo "  [2] Trên MÁY CLIENT — thêm config (cũng dán vào terminal máy client):"
     echo ""
     echo "cat >> ~/.ssh/config <<'SSHCFG'"
-    if [[ $can_login_self -eq 1 ]]; then
-      print_ssh_config_pair "vps-jump" "home" "$USER" "~/.ssh/vps_tunnel"
-    else
-      print_ssh_config_pair "vps-jump" "home" "$kuser" "$kdest"
-    fi
+    print_ssh_config_pair "vps-jump" "home" "$kuser" "$kdest"
     echo "SSHCFG"
     echo "chmod 600 ~/.ssh/config"
     echo ""
-    echo "    (Nếu máy client ĐÃ có Host 'vps-jump' hoặc 'home' thì đổi tên 2 Host này cho khỏi trùng.)"
-
+    echo "  [3] Trên MÁY CLIENT — kết nối:   ssh home"
     echo ""
-    echo "  ── BƯỚC 3/4: Kiểm tra TỪNG HOP trên máy client ──"
-    echo "    Hop 0 — file key đọc được không (phải in ra 1 dòng ssh-ed25519 ...):"
-    echo "      ssh-keygen -y -f $kdest"
-    echo "    Hop 1 — tới VPS (trả về NGAY với exit khác 0 và khác 255 là OK; không treo):"
-    echo "      ssh -o IdentitiesOnly=yes -i $kdest $TUNNEL_USER@$VPS_IP true; echo \"exit=\$?\""
-    echo "    Hop 2 — vào máy này qua VPS:"
-    echo "      ssh home"
-    echo ""
-    echo "  ── BƯỚC 4/4: Nếu không vào được — đọc lỗi ──"
-    echo "    no such identity: <file>        -> sai đường dẫn key trong config (kiểm tra dấu '-' và '_')."
-    echo "    invalid format / not a public   -> file key bị hỏng khi copy. Làm lại BƯỚC 1 cách A."
-    echo "    key file."
-    echo "    Permission denied (publickey)   -> thêm -v để xem: nếu KHÔNG có dòng 'Offering public key'"
-    echo "      ở hop 1 (jump@...)               thì ssh chưa đọc được key (lỗi 2 dòng trên). Nếu CÓ dòng đó"
-    echo "                                       mà vẫn bị từ chối thì key này chưa được cài trên VPS cho user"
-    echo "                                       '$TUNNEL_USER' (chạy lại vps_setup.sh, dán public key)."
-    echo "    Permission denied ở hop 2       -> key chưa nằm trong authorized_keys của user '$kuser' trên"
-    echo "      (sau khi hop 1 đã OK)            máy này (chỉ xảy ra nếu không chọn mở SSH vào user này)."
-    echo "    Connection refused / timed out  -> tunnel chưa chạy. Trên máy này:"
+    echo "  Lỗi thường gặp (xem log ở MÁY CLIENT, trừ dòng ghi rõ máy khác):"
+    echo "    no such identity / invalid format   -> sai đường dẫn hoặc file key hỏng: làm lại [1]"
+    echo "    Permission denied (publickey)       -> chạy 'ssh -v home 2>&1 | grep Offering'."
+    echo "                                           Không thấy dòng nào = ssh chưa đọc được key (làm lại [1])."
+    echo "                                           Có dòng mà vẫn bị từ chối = key chưa cài trên VPS."
     if [[ "$OS" == "Darwin" ]]; then
-      echo "      launchctl list | grep vpstunnel"
+      echo "    Connection refused / timed out      -> tunnel chưa chạy. Kiểm tra trên MÁY NÀY: launchctl list | grep vpstunnel"
     elif [[ $IS_ROOT -eq 1 ]]; then
-      echo "      systemctl status ${SERVICE_NAME:-vpstunnel-*.service}"
+      echo "    Connection refused / timed out      -> tunnel chưa chạy. Kiểm tra trên MÁY NÀY: systemctl status ${SERVICE_NAME:-vpstunnel-*.service}"
     else
-      echo "      systemctl --user status ${SERVICE_NAME:-vpstunnel-*.service}"
+      echo "    Connection refused / timed out      -> tunnel chưa chạy. Kiểm tra trên MÁY NÀY: systemctl --user status ${SERVICE_NAME:-vpstunnel-*.service}"
     fi
-    echo "    Hop 1 mãi không tới được VPS    -> sshd VPS không nghe port 22 (config trên không có dòng"
-    echo "                                       'Port' cho vps-jump). Thêm 'Port <port_sshd_VPS>' vào Host đó."
-    echo ""
-    echo "  Thêm Host cho nhiều máy cùng qua 1 jump: giữ 1 'vps-jump', mỗi máy đích 1 Host riêng"
-    echo "  (khác tên, khác 'Port' = remote_port của máy đó, khác 'User')."
+    echo "    Kẹt ở hop 1 (tới VPS)               -> sshd VPS không ở port 22: thêm 'Port <n>' vào Host vps-jump (trên MÁY CLIENT)"
+    echo "  (Nhiều máy qua 1 jump: giữ 1 'vps-jump', mỗi máy đích 1 Host riêng, khác Port và User.)"
   fi
 
   if [[ ${#NEW_USERNAMES[@]} -gt 0 ]]; then
     echo ""
-    echo "  ══════════ REMOTE USER (mỗi người 1 key riêng) ══════════"
-    echo "  Key riêng của họ mới chỉ được cài ở máy này. Hop 1 chỉ chạy khi public key của họ ĐÃ"
-    echo "  được dán lên VPS qua vps_setup.sh (cùng user '$TUNNEL_USER') — xem mục BÀN GIAO ở trên."
+    echo "  ── REMOTE USER (key riêng) ──"
+    echo "  Trước: trên VPS, chạy lại vps_setup.sh, nhập user '$TUNNEL_USER', dán public key của họ."
+    echo "  Sau đó trên MÁY CLIENT của từng người:"
     for i in "${!NEW_USERNAMES[@]}"; do
       uname="${NEW_USERNAMES[$i]}"
       ukey="~/.ssh/${NEW_KEYPATHS[$i]##*/}"
       echo ""
-      echo "  ── User '$uname' ──"
-      echo "    Chuyển key sang máy của họ:"
+      echo "  [$uname] Trên MÁY CLIENT của $uname — chép key:"
       print_key_transfer "${NEW_KEYPATHS[$i]}" "$ukey"
       echo ""
-      echo "    Config cho máy của họ (dán vào terminal, nối vào cuối ~/.ssh/config):"
+      echo "  [$uname] Trên MÁY CLIENT của $uname — thêm config, rồi dùng:  ssh home-$uname"
       echo ""
       echo "cat >> ~/.ssh/config <<'SSHCFG'"
       print_ssh_config_pair "vps-jump-$uname" "home-$uname" "$uname" "$ukey"
       echo "SSHCFG"
-      echo "    Dùng:  ssh home-$uname"
     done
   fi
 
