@@ -45,6 +45,37 @@ fi
 
 echo "=== Setup SSH reverse tunnel (máy local) — local_setup.sh v$SCRIPT_VERSION ==="
 echo ""
+cat <<'GUIDE'
+########################################################################
+##  LỘ TRÌNH TỔNG THỂ — 4 bước, chạy ở 3 nơi khác nhau
+########################################################################
+
+  [Máy LOCAL: nhà/sau NAT] --tunnel--> [VPS] <--ssh-- [LAPTOP của bạn]
+
+  BƯỚC 1 — trên máy LOCAL   <<< BẠN ĐANG Ở ĐÂY (local_setup.sh, phần đầu)
+           Script tạo 1 cặp key và IN RA PUBLIC KEY (dòng ssh-ed25519 ...).
+           Copy dòng này, rồi script DỪNG ở câu "Đã setup xong user tunnel
+           trên VPS chưa?" — để cửa sổ này mở, sang bước 2.
+
+  BƯỚC 2 — trên VPS (chạy vps_setup.sh)
+           Dán public key ở bước 1, chọn tên user tunnel và remote_port.
+           Cuối script báo '✔ HOÀN TẤT'. Nhớ: tên user + remote_port.
+
+  BƯỚC 3 — quay lại máy LOCAL (cửa sổ này, tiếp tục local_setup.sh)
+           Nhấn Enter, nhập IP VPS, tên user và Port map (dạng
+           remote_port:local_port, vd 2201:22). Script cài autossh, tạo
+           service chạy nền tự nối lại -> tunnel mở.
+
+  BƯỚC 4 — trên LAPTOP của bạn (thiết bị dùng để SSH từ xa)
+           Chép private key + đoạn ~/.ssh/config mà script in ra ở cuối,
+           rồi gõ:  ssh home   (đi qua VPS vào máy LOCAL).
+
+  THÊM MÁY THỨ 2 vào cùng VPS: lặp bước 1-3 với key mới + remote_port MỚI
+  (không trùng máy đầu).
+
+########################################################################
+GUIDE
+echo ""
 
 # ============================================================================
 # Hỏi 1 câu: LUÔN hiện được câu hỏi, và LUÔN đọc từ bàn phím thật.

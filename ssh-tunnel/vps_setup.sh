@@ -80,13 +80,49 @@ ensure_pkg() {
 
 echo "=== Setup user tunnel trên VPS (vps_setup.sh v$SCRIPT_VERSION) ==="
 echo ""
+cat <<'GUIDE'
+########################################################################
+##  LỘ TRÌNH TỔNG THỂ — 4 bước, chạy ở 3 nơi khác nhau
+########################################################################
+
+  [Máy LOCAL: nhà/sau NAT] --tunnel--> [VPS] <--ssh-- [LAPTOP của bạn]
+
+  BƯỚC 1 — trên máy LOCAL (máy muốn được truy cập từ xa)
+           Chạy local_setup.sh. Nó tạo 1 cặp key và IN RA PUBLIC KEY
+           (dòng ssh-ed25519 ...). Copy dòng này, rồi DỪNG ở câu
+           "Đã setup user tunnel trên VPS chưa?" — để cửa sổ đó mở.
+
+  BƯỚC 2 — trên VPS   <<< BẠN ĐANG Ở ĐÂY (vps_setup.sh)
+           Dán public key ở bước 1, chọn tên user tunnel và remote_port.
+           Script tạo user "chỉ để tunnel" (không shell, không login) và
+           chỉ cho phép nó mở đúng các port bạn khai.
+           Cuối script báo '✔ HOÀN TẤT'. Nhớ: tên user + remote_port.
+
+  BƯỚC 3 — quay lại máy LOCAL (cửa sổ đang dừng ở bước 1)
+           Nhấn Enter, nhập IP VPS, tên user và Port map (dạng
+           remote_port:local_port, vd 2201:22). Script cài autossh, tạo
+           service chạy nền tự nối lại -> tunnel mở, máy LOCAL đã "gọi" ra VPS.
+
+  BƯỚC 4 — trên LAPTOP của bạn (thiết bị dùng để SSH từ xa)
+           Chép private key + đoạn ~/.ssh/config mà local_setup.sh in ra,
+           rồi gõ:  ssh home   (đi qua VPS vào máy LOCAL).
+
+  THÊM MÁY THỨ 2 vào cùng VPS: lặp bước 1-3 với key mới + remote_port MỚI
+  (không trùng máy đầu). Ở bước 2 gõ CÙNG tên user, CHỈ nhập port mới.
+
+########################################################################
+GUIDE
+echo ""
+read -r -p "Đã hiểu lộ trình? Nhấn Enter để bắt đầu BƯỚC 2 (Ctrl+C để thoát)... " _ || true
+echo ""
 
 echo "==> [1/8] Kiểm tra sshd đã cài chưa (thường đã có sẵn vì bạn đang SSH vào máy này)"
 ensure_pkg "openssh-server (sshd)" "command -v sshd || [[ -x /usr/sbin/sshd ]]" "openssh-server" \
   || install_pkg openssh
 echo ""
 
-read -r -p "Tên user tunnel muốn tạo [tunneluser]: " USERNAME
+echo "Ví dụ tên user: tunneluser  hoặc  jump  (nhiều máy dùng chung VPS thì gõ cùng 1 tên)"
+read -r -p "Tên user tunnel [tunneluser]: " USERNAME
 USERNAME="${USERNAME:-tunneluser}"
 if ! [[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
   echo "Lỗi: tên user không hợp lệ (chỉ chữ thường, số, '_', '-', bắt đầu bằng chữ hoặc '_')." >&2
@@ -94,9 +130,9 @@ if ! [[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
 fi
 
 echo ""
-echo "Nhập public key theo 1 trong 2 cách:"
-echo "  1) Đường dẫn tới file .pub đã copy lên VPS (vd: /root/vps_tunnel.pub)"
-echo "  2) Dán trực tiếp nội dung public key (dòng bắt đầu bằng ssh-ed25519 / ssh-rsa ...)"
+echo "Dán 1 dòng public key (vd: ssh-ed25519 AAAAC3Nza...xyz vps-tunnel-20261013)"
+echo "hoặc đường dẫn file .pub trên VPS (vd: /root/vps_tunnel.pub)"
+echo "(Chưa có key? Ctrl+C, chạy local_setup.sh trên máy LOCAL trước — bước 1.)"
 read -r -p "Public key (đường dẫn hoặc nội dung): " PUBKEY_INPUT
 echo ""
 
