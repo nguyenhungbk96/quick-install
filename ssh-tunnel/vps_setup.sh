@@ -380,9 +380,6 @@ if [[ $VERIFY_OK -eq 1 ]]; then
   echo "    IP hoặc domain của VPS : $VPS_PUBLIC_IP"
   echo "    Tên user tunnel        : $USERNAME"
   echo "    Port map               : $SUGGEST_MAP_STR"
-  echo "      - SSH Local dùng port 22 mặc định : ${FIRST_PORT}:22"
-  echo "      - Map thẳng vào port ${FIRST_PORT} Local   : ${FIRST_PORT}:${FIRST_PORT}  (SSH đổi port / WSL2 / app)"
-  echo "      - Mở nhiều port cùng lúc          : ${FIRST_PORT}:22 8080:3000"
   if [[ "$CURRENT_SSH_PORT" != "22" ]]; then
     echo "    CHÚ Ý: sshd VPS đang nghe port $CURRENT_SSH_PORT (không phải 22). local_setup.sh"
     echo "           gọi ssh tới VPS bằng port mặc định 22, nên cần mở/đổi port cho khớp."
