@@ -139,8 +139,11 @@ if ! [[ "$PUBKEY_CONTENT" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-) ]]; then
   exit 1
 fi
 
-echo "remote_port = port mở trên VPS cho máy này (cách nhau bởi dấu cách). Mỗi máy 1 port RIÊNG."
-echo "  Ví dụ: 2201  |  2201 8080 (SSH + 1 web app)  |  máy thứ 2 chỉ nhập port mới: 2202"
+echo "Nhập port mở trên VPS (hoặc cặp <port_VPS>:<port_Local>, cách nhau bởi dấu cách):"
+echo "  Ví dụ:"
+echo "    2224               -> mở port 2224 trên VPS (map về port 22 SSH mặc định của máy Local)"
+echo "    2224:2224          -> mở port 2224 trên VPS, map vào port 2224 của máy Local (đổi port SSH / WSL2)"
+echo "    2224:22 8080:3000  -> mở nhiều port cùng lúc"
 
 # Cho phép để trống CHỈ khi user này đã có danh sách port từ lần chạy trước (trường
 # hợp chỉ muốn thêm key của máy/người khác, không thêm port mới). Lần đầu thì bắt buộc nhập.
@@ -152,21 +155,34 @@ fi
 
 PORTS_RAW=""
 if [[ $HAS_EXISTING_PORTS -eq 1 ]]; then
-  echo "  (User '$USERNAME' đã có port từ trước — có thể để trống nếu chỉ thêm key, không thêm port.)"
-  read -r -p "Danh sách port [Enter = giữ nguyên port cũ]: " PORTS_RAW || true
+  echo "  (User '$USERNAME' đã có port từ trước — để trống nếu chỉ thêm key, không thêm port mới)"
+  read -r -p "Port mở trên VPS (vd: 2224 hoặc 2224:2224) [Enter = giữ nguyên port cũ]: " PORTS_RAW || true
 else
-  read -r -p "Danh sách port (vd: 2222 8080): " PORTS_RAW || true
+  read -r -p "Port mở trên VPS (vd: 2224 hoặc 2224:2224): " PORTS_RAW || true
   if [[ -z "${PORTS_RAW// /}" ]]; then
-    echo "Lỗi: chưa nhập port nào. Cần ít nhất 1 port, vd: 2222" >&2
+    echo "Lỗi: chưa nhập port nào. Cần ít nhất 1 port, vd: 2224 hoặc 2224:2224" >&2
     exit 1
   fi
 fi
 
 TUNNEL_PORTS=()
-read -r -a TUNNEL_PORTS <<< "$PORTS_RAW"
-for p in ${TUNNEL_PORTS[@]+"${TUNNEL_PORTS[@]}"}; do
-  if ! [[ "$p" =~ ^[0-9]+$ ]] || (( 10#$p < 1 || 10#$p > 65535 )); then
-    echo "Lỗi: port '$p' không hợp lệ (phải là số từ 1 đến 65535)." >&2
+SUGGEST_MAPS=()
+read -r -a RAW_TOKENS <<< "$PORTS_RAW"
+for tok in ${RAW_TOKENS[@]+"${RAW_TOKENS[@]}"}; do
+  if [[ "$tok" =~ ^[0-9]+:[0-9]+$ ]]; then
+    rp="${tok%%:*}"
+    lp="${tok#*:}"
+    if (( 10#$rp < 1 || 10#$rp > 65535 || 10#$lp < 1 || 10#$lp > 65535 )); then
+      echo "Lỗi: '$tok' không hợp lệ (port phải từ 1 đến 65535)." >&2
+      exit 1
+    fi
+    TUNNEL_PORTS+=("$rp")
+    SUGGEST_MAPS+=("${rp}:${lp}")
+  elif [[ "$tok" =~ ^[0-9]+$ ]] && (( 10#$tok >= 1 && 10#$tok <= 65535 )); then
+    TUNNEL_PORTS+=("$tok")
+    SUGGEST_MAPS+=("${tok}:22")
+  else
+    echo "Lỗi: '$tok' không hợp lệ (nhập số port vd 2224, hoặc cặp port vd 2224:2224)." >&2
     exit 1
   fi
 done
@@ -356,13 +372,14 @@ if [[ $VERIFY_OK -eq 1 ]]; then
   VPS_PUBLIC_IP="${VPS_PUBLIC_IP:-<IP_VPS>}"
 
   FIRST_PORT="${NEW_PORTS[0]:-${TUNNEL_PORTS[0]:-2201}}"
+  SUGGEST_MAP_STR="${SUGGEST_MAPS[*]:-${FIRST_PORT}:22}"
 
   echo "########################################################################"
   echo "##  NHẬP CÁC THÔNG TIN SAU VÀO local_setup.sh (bước 3 trên máy LOCAL)"
   echo "########################################################################"
   echo "    IP hoặc domain của VPS : $VPS_PUBLIC_IP"
   echo "    Tên user tunnel        : $USERNAME"
-  echo "    Port map               : <remote_port>:<local_port>"
+  echo "    Port map               : $SUGGEST_MAP_STR"
   echo "      - SSH Local dùng port 22 mặc định : ${FIRST_PORT}:22"
   echo "      - Map thẳng vào port ${FIRST_PORT} Local   : ${FIRST_PORT}:${FIRST_PORT}  (SSH đổi port / WSL2 / app)"
   echo "      - Mở nhiều port cùng lúc          : ${FIRST_PORT}:22 8080:3000"
