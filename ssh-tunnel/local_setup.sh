@@ -150,17 +150,8 @@ if [[ "$TUNNEL_USER" == *' '* ]]; then
 fi
 
 echo ""
-echo "Nhập danh sách port muốn forward, dạng remote_port:local_port, cách nhau bởi dấu cách."
-echo "  remote_port : port sẽ mở trên VPS (chỉ bind localhost VPS, dùng qua SSH jump)"
-echo "  local_port  : port tương ứng trên máy bạn (22 = SSH vào chính máy này)"
-echo ""
-echo "  QUY TẮC: remote_port phải RIÊNG cho từng máy (không trùng máy khác đang dùng chung"
-echo "  VPS/user tunnel) và phải nằm trong danh sách đã khai khi chạy vps_setup.sh."
-echo ""
-echo "  Ví dụ:"
-echo "    2201:22              -> SSH vào máy này qua port 2201 trên VPS"
-echo "    2201:22 8080:3000    -> SSH (2201) + web app chạy ở port 3000 của máy này (mở ra 8080)"
-echo "    2202:22              -> máy thứ hai dùng chung VPS: đổi sang 2202, KHÔNG dùng lại 2201"
+echo "Port map dạng remote_port:local_port (cách nhau bởi dấu cách, mỗi máy 1 remote_port riêng)."
+echo "  Ví dụ: 2201:22 (SSH)  |  2201:22 8080:3000 (SSH + web)  |  2202:22 (máy thứ 2)"
 echo ""
 PORT_MAPS=()
 for _attempt in 1 2 3; do
@@ -188,22 +179,14 @@ if [[ ${#PORT_MAPS[@]} -eq 0 ]]; then
   exit 1
 fi
 
-# Port SSH THẬT của chính máy này, dùng xuyên suốt script thay cho số 22 cứng.
-# Mặc định 22, nhưng KHÔNG phải lúc nào cũng vậy: trên 1 máy Windows chạy NHIỀU
-# distro WSL, các distro dùng CHUNG network namespace nên chỉ 1 distro giữ được
-# port 22 — những distro còn lại BẮT BUỘC cho sshd nghe port khác, nếu không
-# tunnel sẽ âm thầm trỏ vào sshd của distro khác (bug thật đã gặp).
 SSH_LOCAL_PORT=""
 for pm in "${PORT_MAPS[@]}"; do
   if [[ "${pm#*:}" == "22" ]]; then SSH_LOCAL_PORT="22"; break; fi
 done
 if [[ -z "$SSH_LOCAL_PORT" ]]; then
   echo ""
-  echo "Port map không có local_port 22. Nếu bạn muốn SSH vào CHÍNH MÁY NÀY qua tunnel,"
-  echo "cho biết local_port nào là sshd của máy này — script sẽ tự cấu hình sshd nghe"
-  echo "đúng port đó (cần thiết khi 1 máy Windows chạy nhiều distro WSL: chỉ 1 distro"
-  echo "được giữ port 22, các distro khác phải dùng port riêng)."
-  ask "  local_port dùng cho SSH [để trống = không SSH vào máy này]: "; SSH_LOCAL_PORT="$ASK_REPLY"
+  echo "Port map không có local_port 22."
+  ask "  local_port dùng cho SSH của máy này [Enter = không SSH vào máy này]: "; SSH_LOCAL_PORT="$ASK_REPLY"
   if [[ -n "$SSH_LOCAL_PORT" ]]; then
     if ! [[ "$SSH_LOCAL_PORT" =~ ^[0-9]+$ ]] || (( SSH_LOCAL_PORT < 1 || SSH_LOCAL_PORT > 65535 )); then
       echo "Lỗi: port '$SSH_LOCAL_PORT' không hợp lệ." >&2
@@ -222,17 +205,6 @@ if [[ -z "$SSH_LOCAL_PORT" ]]; then
   fi
 fi
 
-# ============================================================================
-# Remote user: HỎI Ở ĐÂY (cùng cụm câu hỏi đầu script) nhưng TẠO Ở BƯỚC [3/6].
-#
-# Vì sao tách đôi thay vì hỏi-và-tạo luôn tại chỗ:
-#   - Hỏi hết 1 lượt ở đầu -> trả lời xong là script chạy liền mạch tới cuối,
-#     không bắt bạn ngồi canh để trả lời thêm giữa chừng.
-#   - Nhưng việc TẠO thật phải đợi sau bước [2/6], vì ngay sau khi tạo user
-#     script tự SSH thử vào chính user đó để kiểm chứng "đăng nhập được bằng
-#     key, không hỏi password" — muốn thử được thì sshd phải đã cài & chạy,
-#     mà đó chính là việc bước [2/6] lo.
-# ============================================================================
 NEW_USERNAMES=()
 NEW_PASSWORDS=()
 NEW_KEYPATHS=()
@@ -241,10 +213,7 @@ NEW_SUDOMODES=()   # "no" | "pass" (sudo có hỏi password) | "nopass" (NOPASSW
 collect_remote_users() {
   local ans username password password2 keypath key_default sudo_ans nopass_ans sudomode sudo_desc
   echo ""
-  echo "Ngoài tài khoản đang chạy script, có cần TẠO THÊM user riêng trên máy này để"
-  echo "người khác SSH vào bằng tài khoản + key riêng của họ không? (mỗi người 1 user,"
-  echo "1 key riêng -> thu hồi quyền từng người không ảnh hưởng ai khác)"
-  ask "Tạo remote user? (y/N): " "n"; ans="$ASK_REPLY"
+  ask "Tạo thêm remote user riêng trên máy này? (y/N): " "n"; ans="$ASK_REPLY"
 
   while [[ "$ans" =~ ^[Yy]$ ]]; do
     ask "  Tên user muốn tạo: "; username="$ASK_REPLY"
@@ -254,11 +223,7 @@ collect_remote_users() {
       continue
     fi
 
-    echo "  Password cho '$username':"
-    echo "    - Để TRỐNG (Enter luôn) = không đặt password, chỉ đăng nhập được bằng SSH key."
-    echo "      An toàn nhất, và vẫn SSH vào bình thường được."
-    echo "    - Đặt password nếu user đó cần chạy 'sudo', hoặc cần đăng nhập tại màn hình máy."
-    ask_secret "  Password (Enter để bỏ trống): "; password="$ASK_REPLY"
+    ask_secret "  Password cho '$username' (Enter = bỏ trống, chỉ dùng SSH key): "; password="$ASK_REPLY"
     if [[ -n "$password" ]]; then
       ask_secret "  Nhập lại password: "; password2="$ASK_REPLY"
       if [[ "$password" != "$password2" ]]; then
@@ -668,116 +633,70 @@ create_remote_users() {
 report_remote_users() {
   [[ ${#NEW_USERNAMES[@]} -gt 0 ]] || return 0
 
-  local i username keypath hop1_exit
+  local i username keypath hop1_exit uhome
 
   echo ""
   echo "########################################################################"
-  echo "##  BÀN GIAO ${#NEW_USERNAMES[@]} REMOTE USER VỪA TẠO"
+  echo "##  BÀN GIAO ${#NEW_USERNAMES[@]} REMOTE USER"
   echo "########################################################################"
 
   for i in "${!NEW_USERNAMES[@]}"; do
     username="${NEW_USERNAMES[$i]}"
     keypath="${NEW_KEYPATHS[$i]}"
+    uhome="$(get_home_dir "$username" 2>/dev/null || echo "/home/$username")"
     echo ""
     echo "  ── [$username] ──────────────────────────────────────────────────"
-    echo "  Có 2 CÁCH để máy-sẽ-SSH đăng nhập được vào '$username'. Chọn 1:"
-    echo ""
-    echo "  [A] MANG PRIVATE KEY vừa sinh sang máy đó  (mặc định của script)"
-    echo "      Hợp khi '$username' là NGƯỜI KHÁC, hoặc máy đó chưa có key SSH nào."
-    echo "      Private key: $keypath"
-    echo "      ---- BEGIN nội dung private key (copy TOÀN BỘ, gồm cả dòng BEGIN/END) ----"
+    echo "  [A] Dùng private key vừa sinh ($keypath):"
     cat "$keypath"
-    echo "      ---- END nội dung private key ----"
-    echo "        # trên MÁY ĐÓ: dán vào ~/.ssh/<tên_file> rồi:  chmod 600 ~/.ssh/<tên_file>"
-    echo "        # rồi trỏ IdentityFile trong ~/.ssh/config tới file đó."
-    echo "        # (hoặc gửi qua kênh an toàn thay vì copy tay:  scp $keypath <họ>@<máy_của_họ>:~/.ssh/)"
-    echo "      Sau khi máy đó đã nhận được key, XOÁ bản trên máy này — đừng để private"
-    echo "      key tồn tại ở 2 nơi lâu dài:"
-    echo "        shred -u $keypath 2>/dev/null || rm -f $keypath"
+    echo "      # Lưu vào ~/.ssh/<file> trên máy client (chmod 600), rồi xoá bản trên máy này:"
+    echo "      shred -u $keypath 2>/dev/null || rm -f $keypath"
     echo ""
-    echo "  [B] THÊM PUBLIC KEY của máy đó vào '$username'  (khuyến nghị nếu máy đó đã có key)"
-    echo "      Hợp nhất khi '$username' CHÍNH LÀ BẠN, trên 1 máy vốn đã có sẵn keypair"
-    echo "      (vd laptop bạn đang dùng để SSH) — lúc đó key script vừa sinh là THỪA."
-    echo "      Ưu điểm: KHÔNG có private key nào phải di chuyển, và mỗi thiết bị giữ key"
-    echo "      riêng của nó -> thu hồi 1 thiết bị không ảnh hưởng thiết bị khác."
-    echo "        # trên MÁY SẼ SSH: lấy public key của nó"
-    echo "        cat ~/.ssh/<key>.pub     # hoặc: ssh-keygen -y -f ~/.ssh/<key>"
-    echo "        # rồi trên máy này, thêm vào đúng user đó:"
-    echo "        echo '<dán public key vào đây>' >> $(get_home_dir "$username" 2>/dev/null || echo "/home/$username")/.ssh/authorized_keys"
-    echo "        chown $username: $(get_home_dir "$username" 2>/dev/null || echo "/home/$username")/.ssh/authorized_keys"
-    echo "        chmod 600 $(get_home_dir "$username" 2>/dev/null || echo "/home/$username")/.ssh/authorized_keys"
-    echo "      (Chọn B thì key script vừa sinh ở trên không cần dùng — xoá đi cho gọn.)"
+    echo "  [B] Hoặc thêm public key có sẵn của máy client vào '$username' (chạy trên máy này):"
+    echo "      echo '<public_key_client>' >> $uhome/.ssh/authorized_keys"
+    echo "      chown $username: $uhome/.ssh/authorized_keys && chmod 600 $uhome/.ssh/authorized_keys"
   done
 
   if [[ -z "$remote_ssh_port" ]]; then
     echo ""
-    echo "  CẢNH BÁO: port map lần này KHÔNG có local_port=22 nên chưa mở đường SSH vào" >&2
-    echo "  máy này qua tunnel — các user trên mới chỉ đăng nhập được từ trong mạng LAN." >&2
-    echo "  Chạy lại script và thêm 1 port map trỏ tới port SSH của máy này để mở hop đầu." >&2
+    echo "  CẢNH BÁO: port map chưa có cổng SSH -> mới chỉ đăng nhập được trong mạng LAN." >&2
     echo "########################################################################"
     return 0
   fi
 
   echo ""
-  echo "  CÒN 1 VIỆC BẮT BUỘC: các key trên mới chỉ được MÁY NÀY chấp nhận (hop cuối)."
-  echo "  Để các user đó tự nhảy qua VPS (hop đầu, ProxyJump vào '$TUNNEL_USER'), từng key"
-  echo "  còn phải được ĐĂNG KÝ THÊM trên VPS. Sang VPS chạy lại vps_setup.sh, nhập ĐÚNG"
-  echo "  cùng user '$TUNNEL_USER' (từ v1.4.0, vps_setup.sh tự cộng dồn port với danh sách"
-  echo "  đã cấp trước đó — không cần nhớ/gõ lại port cũ), rồi dán lần lượt các public key"
-  echo "  dưới đây (vps_setup.sh tự APPEND, không xoá key của người khác đã có sẵn):"
-  echo ""
+  echo "  ── Đăng ký Public Key lên VPS (chạy lại vps_setup.sh, user '$TUNNEL_USER') ──"
   for i in "${!NEW_USERNAMES[@]}"; do
     echo "  # ${NEW_USERNAMES[$i]}"
     cat "${NEW_KEYPATHS[$i]}.pub"
   done
   echo ""
-  ask "  Đã dán xong các public key trên vào vps_setup.sh chưa? Nhấn Enter để tự kiểm tra..."
+  ask "  Đã dán các public key trên vào vps_setup.sh chưa? Nhấn Enter để kiểm tra..."
 
   for i in "${!NEW_USERNAMES[@]}"; do
     username="${NEW_USERNAMES[$i]}"
     keypath="${NEW_KEYPATHS[$i]}"
-    echo "    [Hop đầu] Kiểm tra key của '$username' nhảy qua VPS ('$TUNNEL_USER@$VPS_IP')..."
+    echo "    [Hop đầu] Kiểm tra '$username' -> '$TUNNEL_USER@$VPS_IP'..."
     set +e
     ssh -n -i "$keypath" -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \
       "${TUNNEL_USER}@${VPS_IP}" true 2>/tmp/ssh_hop1_${username}.log
     hop1_exit=$?
     set -e
     if [[ $hop1_exit -eq 255 ]]; then
-      echo "    CẢNH BÁO: key của '$username' CHƯA nhảy qua VPS được. Chi tiết:" >&2
+      echo "    CẢNH BÁO: key của '$username' CHƯA nhảy qua VPS được:" >&2
       cat "/tmp/ssh_hop1_${username}.log" >&2
     else
-      # Exit code khác 0 (nhưng không phải 255) là bình thường: $TUNNEL_USER bị
-      # ép ForceCommand /usr/sbin/nologin nên không chạy được lệnh "true".
       echo "    OK — hop đầu đã thông."
     fi
   done
 
   echo ""
-  echo "  Cấu hình ~/.ssh/config cho MÁY CỦA từng người (thay <private_key> bằng đường"
-  echo "  dẫn họ lưu key bạn gửi):"
-  echo ""
-  echo "    Host vps-jump"
-  echo "        HostName $VPS_IP"
-  echo "        User $TUNNEL_USER"
-  echo "        IdentityFile <private_key>"
-  echo "        ServerAliveInterval 30"
-  echo "        ServerAliveCountMax 3"
-  echo "        TCPKeepAlive yes"
+  echo "  ── Mẫu ~/.ssh/config cho máy client của từng user ──"
   for i in "${!NEW_USERNAMES[@]}"; do
     username="${NEW_USERNAMES[$i]}"
-    echo ""
-    echo "    Host home-$username"
-    echo "        HostName localhost"
-    echo "        Port $remote_ssh_port"
-    echo "        User $username"
-    echo "        ProxyJump vps-jump"
-    echo "        IdentityFile <private_key>"
-    echo "        ServerAliveInterval 30"
-    echo "        ServerAliveCountMax 3"
-    echo "        TCPKeepAlive yes"
+    print_ssh_config_pair "vps-jump-$username" "home-$username" "$username" "~/.ssh/${NEW_KEYPATHS[$i]##*/}"
   done
   echo ""
-  echo "  Rồi họ dùng: ssh home-<tên_user>"
+  echo "  Kết nối: ssh home-<tên_user>"
   echo "########################################################################"
 }
 
@@ -1453,6 +1372,7 @@ print_ssh_config_pair() {
   echo ""
   echo "Host $dest"
   echo "    HostName localhost"
+  echo "    HostKeyAlias $dest"
   echo "    Port $remote_ssh_port"
   echo "    User $duser"
   echo "    ProxyJump $jump"
@@ -1463,23 +1383,24 @@ print_ssh_config_pair() {
   echo "    TCPKeepAlive yes"
 }
 
-# In lệnh chuyển 1 private key sang máy client mà KHÔNG bị hỏng định dạng.
-# Copy-paste key nhiều dòng qua terminal hay làm hỏng file (thừa khoảng trắng, ký tự \r,
-# mất dòng cuối) -> ssh báo "invalid format" / "is not a public key file" và KHÔNG gửi key
-# nào lên VPS (VPS chỉ thấy "Permission denied (publickey)"). Mã hoá base64 thành MỘT dòng
-# thì copy không hỏng được. Tham số: <file private key ở máy này> <đường dẫn đích trên client>
+# In lệnh lưu private key sang máy client bằng heredoc trực quan.
+# Tham số: <file private key ở máy này> <đường dẫn đích trên client>
 print_key_transfer() {
-  local src="$1" dest="$2" b64
-  b64="$(base64 < "$src" | tr -d '\n')"
+  local src="$1" dest="$2" dir
+  dir="$(dirname "$dest")"
   echo ""
-  echo "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '$b64' | (base64 -d 2>/dev/null || base64 -D) > $dest && chmod 600 $dest && ssh-keygen -y -f $dest"
+  if [[ "$dir" != "~/.ssh" && "$dir" != "." ]]; then
+    echo "mkdir -p ~/.ssh $dir && chmod 700 ~/.ssh $dir"
+  else
+    echo "mkdir -p ~/.ssh && chmod 700 ~/.ssh"
+  fi
+  echo "cat > $dest <<'EOF'"
+  cat "$src"
+  echo "EOF"
+  echo "chmod 600 $dest"
   echo ""
-  echo "      (dán nguyên 1 dòng; cuối cùng phải hiện 'ssh-ed25519 AAAA...')"
 }
 
-# Tổng kết cuối cùng: gom MỘT chỗ mọi thông tin kết nối để người dùng lưu lại, khỏi
-# phải lội ngược log dài. Chỉ in khi mọi bước trước đó đã thành công (lỗi thì script
-# đã `exit 1` từ trước).
 print_final_summary() {
   local svc="${SERVICE_NAME:-${PLIST_LABEL:-}}"
   local can_login_self=0
@@ -1492,88 +1413,85 @@ print_final_summary() {
   echo "  VPS         : $VPS_IP   (user tunnel: $TUNNEL_USER)"
   echo "  Port map    : ${PORT_MAPS[*]}   (remote_port:local_port)"
   [[ -z "$svc" ]] || echo "  Service nền : $svc"
-  echo "  Private key : $KEY_PATH   (giữ bí mật, KHÔNG xoá — tunnel cần file này)"
+  echo "  Private key : $KEY_PATH"
   echo "  Public key  : $(cat "$KEY_PATH.pub")"
 
   if [[ -z "$remote_ssh_port" ]]; then
     echo ""
-    echo "  Port map không có local_port 22 nên chưa có đường SSH vào máy này qua tunnel."
+    echo "  Port map không có cổng SSH nên chỉ forward ứng dụng."
     echo "########################################################################"
     return 0
   fi
 
-  echo ""
-  echo "  ── KẾT NỐI TỪ MÁY KHÁC ─────────────────────────────────────────────"
-  echo "  Có 3 máy, đừng nhầm:"
-  echo "    MÁY NÀY   = máy đang chạy script (máy đích, sau NAT)  -> ĐÃ XONG, không làm gì thêm"
-  echo "    VPS       = $VPS_IP                                   -> ĐÃ XONG, không làm gì thêm"
-  echo "    MÁY CLIENT = máy bạn sẽ ngồi gõ ssh (laptop, máy khác) -> làm 3 bước dưới đây"
-  echo "  Cả 2 hop dùng chung 1 private key; public key đã cài sẵn ở VPS và máy này."
-  echo "  => Máy client chỉ cần có file private key, KHÔNG phải add public key."
-
-  local listed=0 i uname ukey kfile kdest kuser
+  local listed=0 i uname ukey kfile kdest kdefault kuser
   if [[ $can_login_self -eq 1 ]]; then
     listed=1
-    kfile="$KEY_PATH"; kdest="~/.ssh/vps_tunnel"; kuser="$USER"
+    kfile="$KEY_PATH"; kdefault="~/.ssh/${KEY_PATH##*/}"; kuser="$USER"
   elif [[ ${#NEW_USERNAMES[@]} -gt 0 ]]; then
     listed=1
-    kfile="${NEW_KEYPATHS[0]}"; kdest="~/.ssh/${NEW_KEYPATHS[0]##*/}"; kuser="${NEW_USERNAMES[0]}"
+    kfile="${NEW_KEYPATHS[0]}"; kdefault="~/.ssh/${NEW_KEYPATHS[0]##*/}"; kuser="${NEW_USERNAMES[0]}"
   fi
 
   if [[ $listed -eq 1 ]]; then
     echo ""
-    echo "  [1] Trên MÁY CLIENT — chép private key (mở terminal máy client, dán):"
-    print_key_transfer "$kfile" "$kdest"
+    echo "  ── KẾT NỐI TỪ MÁY CLIENT (chạy trên MÁY CLIENT) ────────────────────"
+    ask "  Đường dẫn lưu private key trên máy Client [$kdefault]: " "$kdefault"; kdest="$ASK_REPLY"
+    while [[ -z "$kdest" || "$kdest" == *' '* ]]; do
+      ask "  Đường dẫn không được chứa khoảng trắng. Nhập lại [$kdefault]: " "$kdefault"; kdest="$ASK_REPLY"
+    done
     echo ""
-    echo "  [2] Trên MÁY CLIENT — thêm config (cũng dán vào terminal máy client):"
+    echo "  [1] Tạo Private Key:"
+    print_key_transfer "$kfile" "$kdest"
+    echo "  [2] Thêm ~/.ssh/config:"
     echo ""
     echo "cat >> ~/.ssh/config <<'SSHCFG'"
     print_ssh_config_pair "vps-jump" "home" "$kuser" "$kdest"
     echo "SSHCFG"
     echo "chmod 600 ~/.ssh/config"
     echo ""
-    echo "  [3] Trên MÁY CLIENT — kết nối:   ssh home"
+    echo "  [3] Kết nối:   ssh home"
     echo ""
-    echo "  Lỗi thường gặp (xem log ở MÁY CLIENT, trừ dòng ghi rõ máy khác):"
-    echo "    no such identity / invalid format   -> sai đường dẫn hoặc file key hỏng: làm lại [1]"
-    echo "    Permission denied (publickey)       -> chạy 'ssh -v home 2>&1 | grep Offering'."
-    echo "                                           Không thấy dòng nào = ssh chưa đọc được key (làm lại [1])."
-    echo "                                           Có dòng mà vẫn bị từ chối = key chưa cài trên VPS."
+    echo "  ── Xử lý nhanh nếu lỗi ──"
+    echo "    no such identity / invalid format -> chạy lại [1]"
+    echo "    Permission denied (publickey)     -> chạy 'ssh -v home', kiểm tra IP VPS/User và trùng Host cũ"
+    echo "    REMOTE HOST IDENTIFICATION...     -> chạy 'ssh-keygen -R \"[localhost]:$remote_ssh_port\"'"
     if [[ "$OS" == "Darwin" ]]; then
-      echo "    Connection refused / timed out      -> tunnel chưa chạy. Kiểm tra trên MÁY NÀY: launchctl list | grep vpstunnel"
+      echo "    Connection refused / timed out    -> kiểm tra trên máy Local: launchctl list | grep vpstunnel"
     elif [[ $IS_ROOT -eq 1 ]]; then
-      echo "    Connection refused / timed out      -> tunnel chưa chạy. Kiểm tra trên MÁY NÀY: systemctl status ${SERVICE_NAME:-vpstunnel-*.service}"
+      echo "    Connection refused / timed out    -> kiểm tra trên máy Local: systemctl status ${SERVICE_NAME:-vpstunnel-*.service}"
     else
-      echo "    Connection refused / timed out      -> tunnel chưa chạy. Kiểm tra trên MÁY NÀY: systemctl --user status ${SERVICE_NAME:-vpstunnel-*.service}"
+      echo "    Connection refused / timed out    -> kiểm tra trên máy Local: systemctl --user status ${SERVICE_NAME:-vpstunnel-*.service}"
     fi
-    echo "    Kẹt ở hop 1 (tới VPS)               -> sshd VPS không ở port 22: thêm 'Port <n>' vào Host vps-jump (trên MÁY CLIENT)"
-    echo "  (Nhiều máy qua 1 jump: giữ 1 'vps-jump', mỗi máy đích 1 Host riêng, khác Port và User.)"
   fi
 
   if [[ ${#NEW_USERNAMES[@]} -gt 0 ]]; then
     echo ""
-    echo "  ── REMOTE USER (key riêng) ──"
-    echo "  Trước: trên VPS, chạy lại vps_setup.sh, nhập user '$TUNNEL_USER', dán public key của họ."
-    echo "  Sau đó trên MÁY CLIENT của từng người:"
+    echo "  ── REMOTE USER (chạy trên MÁY CLIENT của từng người) ───────────────"
     for i in "${!NEW_USERNAMES[@]}"; do
       uname="${NEW_USERNAMES[$i]}"
-      ukey="~/.ssh/${NEW_KEYPATHS[$i]##*/}"
+      kdefault="~/.ssh/${NEW_KEYPATHS[$i]##*/}"
       echo ""
-      echo "  [$uname] Trên MÁY CLIENT của $uname — chép key:"
+      ask "  [$uname] Đường dẫn lưu private key trên máy Client [$kdefault]: " "$kdefault"; ukey="$ASK_REPLY"
+      while [[ -z "$ukey" || "$ukey" == *' '* ]]; do
+        ask "  [$uname] Đường dẫn không được chứa khoảng trắng. Nhập lại [$kdefault]: " "$kdefault"; ukey="$ASK_REPLY"
+      done
+      echo ""
+      echo "  [$uname] [1] Tạo Private Key:"
       print_key_transfer "${NEW_KEYPATHS[$i]}" "$ukey"
-      echo ""
-      echo "  [$uname] Trên MÁY CLIENT của $uname — thêm config, rồi dùng:  ssh home-$uname"
+      echo "  [$uname] [2] Thêm ~/.ssh/config:"
       echo ""
       echo "cat >> ~/.ssh/config <<'SSHCFG'"
       print_ssh_config_pair "vps-jump-$uname" "home-$uname" "$uname" "$ukey"
       echo "SSHCFG"
+      echo "chmod 600 ~/.ssh/config"
+      echo ""
+      echo "  [$uname] [3] Kết nối:   ssh home-$uname"
     done
   fi
 
   if [[ $listed -eq 0 ]]; then
     echo ""
-    echo "  Chưa có tài khoản nào SSH vào máy này được (đã chọn không mở SSH vào root và"
-    echo "  không tạo remote user). Mẫu để điền khi có user + key:"
+    echo "  Mẫu ~/.ssh/config (điền user và private key):"
     print_ssh_config_pair "vps-jump" "home" "<user_trên_máy_này>" "<private_key>"
   fi
   echo "########################################################################"
