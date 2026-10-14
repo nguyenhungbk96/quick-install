@@ -150,24 +150,27 @@ if [[ "$TUNNEL_USER" == *' '* ]]; then
 fi
 
 echo ""
-echo "Port map dạng remote_port:local_port (cách nhau bởi dấu cách, mỗi máy 1 remote_port riêng)."
-echo "  Ví dụ: 2201:22 (SSH)  |  2201:22 8080:3000 (SSH + web)  |  2202:22 (máy thứ 2)"
+echo "Nhập Port map theo cú pháp: <port_trên_VPS>:<port_trên_máy_Local>"
+echo "  Ví dụ:"
+echo "    2224:22            -> map port 2224 trên VPS vào port 22 (SSH mặc định) của máy này"
+echo "    2224:2224          -> map port 2224 trên VPS vào port 2224 của máy này (đổi port SSH / WSL2)"
+echo "    2224:22 8080:3000  -> mở nhiều port cùng lúc (cách nhau bởi dấu cách)"
 echo ""
 PORT_MAPS=()
 for _attempt in 1 2 3; do
-  ask "Port map (vd: 2201:22): "; PORT_MAPS_RAW="$ASK_REPLY"
+  ask "Port map (vd: 2224:22 hoặc 2224:2224): "; PORT_MAPS_RAW="$ASK_REPLY"
   PORT_MAPS=()
   read -r -a PORT_MAPS <<< "$PORT_MAPS_RAW"
   PORT_MAPS_OK=1
   if [[ ${#PORT_MAPS[@]} -eq 0 ]]; then
     PORT_MAPS_OK=0
-    echo "  Chưa nhập port map nào. Cần ít nhất 1 cặp, vd: 2201:22" >&2
+    echo "  Chưa nhập port map nào. Cần ít nhất 1 cặp, vd: 2224:22 hoặc 2224:2224" >&2
   else
     for pm in "${PORT_MAPS[@]}"; do
       if ! [[ "$pm" =~ ^[0-9]+:[0-9]+$ ]] \
          || (( 10#${pm%%:*} < 1 || 10#${pm%%:*} > 65535 || 10#${pm#*:} < 1 || 10#${pm#*:} > 65535 )); then
         PORT_MAPS_OK=0
-        echo "  '$pm' không hợp lệ — phải có dạng remote_port:local_port (số 1-65535), vd 2201:22" >&2
+        echo "  '$pm' không hợp lệ — phải có dạng remote_port:local_port (số 1-65535), vd 2224:22 hoặc 2224:2224" >&2
       fi
     done
   fi
@@ -184,10 +187,15 @@ for pm in "${PORT_MAPS[@]}"; do
   if [[ "${pm#*:}" == "22" ]]; then SSH_LOCAL_PORT="22"; break; fi
 done
 if [[ -z "$SSH_LOCAL_PORT" ]]; then
+  FIRST_LOCAL_PORT="${PORT_MAPS[0]#*:}"
   echo ""
-  echo "Port map không có local_port 22."
-  ask "  local_port dùng cho SSH của máy này [Enter = không SSH vào máy này]: "; SSH_LOCAL_PORT="$ASK_REPLY"
-  if [[ -n "$SSH_LOCAL_PORT" ]]; then
+  echo "Port map vừa nhập (${PORT_MAPS[*]}) không có local_port 22."
+  echo "  - Nếu muốn dùng port $FIRST_LOCAL_PORT cho SSH vào máy này (vd map ${PORT_MAPS[0]}): nhập $FIRST_LOCAL_PORT (hoặc nhấn Enter)"
+  echo "  - Nếu chỉ forward ứng dụng/web, KHÔNG dùng SSH: gõ 'none'"
+  ask "  local_port dùng cho SSH của máy này [$FIRST_LOCAL_PORT]: " "$FIRST_LOCAL_PORT"; SSH_LOCAL_PORT="$ASK_REPLY"
+  if [[ "$SSH_LOCAL_PORT" == "none" || "$SSH_LOCAL_PORT" == "no" || "$SSH_LOCAL_PORT" == "n" ]]; then
+    SSH_LOCAL_PORT=""
+  elif [[ -n "$SSH_LOCAL_PORT" ]]; then
     if ! [[ "$SSH_LOCAL_PORT" =~ ^[0-9]+$ ]] || (( SSH_LOCAL_PORT < 1 || SSH_LOCAL_PORT > 65535 )); then
       echo "Lỗi: port '$SSH_LOCAL_PORT' không hợp lệ." >&2
       exit 1
@@ -201,7 +209,7 @@ if [[ -z "$SSH_LOCAL_PORT" ]]; then
       echo "Thêm 1 cặp dạng <remote_port>:$SSH_LOCAL_PORT rồi chạy lại." >&2
       exit 1
     fi
-    echo "    -> sshd của máy này sẽ dùng port $SSH_LOCAL_PORT."
+    echo "    -> sshd của máy này sẽ tự động cấu hình chạy ở port $SSH_LOCAL_PORT."
   fi
 fi
 

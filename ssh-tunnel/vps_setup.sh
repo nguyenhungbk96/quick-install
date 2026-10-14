@@ -355,26 +355,17 @@ if [[ $VERIFY_OK -eq 1 ]]; then
   fi
   VPS_PUBLIC_IP="${VPS_PUBLIC_IP:-<IP_VPS>}"
 
-  # Gợi ý port map: port đầu tiên mới nhập cho SSH vào máy LOCAL (local_port 22),
-  # các port sau là ứng dụng khác (thay local_port cho đúng).
-  SUGGEST_MAP=""
-  FIRST_NEW=1
-  for p in ${NEW_PORTS[@]+"${NEW_PORTS[@]}"}; do
-    if [[ $FIRST_NEW -eq 1 ]]; then
-      SUGGEST_MAP="${p}:22"; FIRST_NEW=0
-    else
-      SUGGEST_MAP="${SUGGEST_MAP} ${p}:<local_port>"
-    fi
-  done
-  SUGGEST_MAP="${SUGGEST_MAP:-<remote_port>:22}"
+  FIRST_PORT="${NEW_PORTS[0]:-${TUNNEL_PORTS[0]:-2201}}"
 
   echo "########################################################################"
   echo "##  NHẬP CÁC THÔNG TIN SAU VÀO local_setup.sh (bước 3 trên máy LOCAL)"
   echo "########################################################################"
   echo "    IP hoặc domain của VPS : $VPS_PUBLIC_IP"
   echo "    Tên user tunnel        : $USERNAME"
-  echo "    Port map               : $SUGGEST_MAP"
-  echo "                             (dạng remote_port:local_port; 22 = SSH vào máy LOCAL)"
+  echo "    Port map               : <remote_port>:<local_port>"
+  echo "      - SSH Local dùng port 22 mặc định : ${FIRST_PORT}:22"
+  echo "      - Map thẳng vào port ${FIRST_PORT} Local   : ${FIRST_PORT}:${FIRST_PORT}  (SSH đổi port / WSL2 / app)"
+  echo "      - Mở nhiều port cùng lúc          : ${FIRST_PORT}:22 8080:3000"
   if [[ "$CURRENT_SSH_PORT" != "22" ]]; then
     echo "    CHÚ Ý: sshd VPS đang nghe port $CURRENT_SSH_PORT (không phải 22). local_setup.sh"
     echo "           gọi ssh tới VPS bằng port mặc định 22, nên cần mở/đổi port cho khớp."
