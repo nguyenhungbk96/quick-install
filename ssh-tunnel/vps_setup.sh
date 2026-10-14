@@ -21,7 +21,7 @@
 #     restart để chứng minh cấu hình thực sự có hiệu lực (không chỉ giả định).
 #   - Không đụng vào /etc/ssh/sshd_config gốc -> an toàn, dễ gỡ (chỉ cần xoá 1 file).
 #
-SCRIPT_VERSION="1.6.0"
+SCRIPT_VERSION="1.7.0"
 
 set -euo pipefail
 

@@ -13,7 +13,7 @@
 #   sudo ./local_setup.sh     # provisioning: root tạo sẵn user + key cho người khác
 # Script sẽ hỏi từng bước: tạo/chọn key, IP VPS, user tunnel, các port cần forward.
 #
-SCRIPT_VERSION="1.14.0"
+SCRIPT_VERSION="1.15.0"
 
 set -euo pipefail
 
